@@ -98,16 +98,18 @@ inline void comm::init_trace_file() {
   ygm_info += std::to_string(m_layout.size()) + "," + std::to_string(m_layout.rank()) + "," + std::to_string(m_layout.node_id()) + "," + std::to_string(m_layout.local_id());
   switch (config.routing) {
     case detail::routing_type::NONE:
-      ygm_info += "NONE\n";
+      ygm_info += ",NONE\n";
       break;
     case detail::routing_type::NR:
-      ygm_info += "NR\n";
+      ygm_info += ",NR\n";
       break;
     case detail::routing_type::NLNR:
-      ygm_info += "NLNR\n";
+      ygm_info += ",NLNR\n";
       break;
     }
   *m_trace_out << ygm_info << std::endl;
+
+  *m_trace_out << "rank,next,dest,size,type" << std::endl;
 }
 
 inline void comm::stats_reset() { stats.reset(); }
