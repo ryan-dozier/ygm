@@ -94,7 +94,7 @@ inline void comm::init_trace_file() {
   trace_filename += "n" + std::to_string(m_layout.node_id()) + "_lr" + std::to_string(m_layout.local_id()) + "_r" + std::to_string(m_layout.rank()) + ".csv";
   m_trace_out = new std::fstream(trace_filename, std::ofstream::out | std::ofstream::app);
   
-  std::string ygm_info = std::string("mpi size, global rank, node#, local rank, routing\n");
+  std::string ygm_info = std::string("mpi_size,global_rank,node#,local_rank,routing\n");
   ygm_info += std::to_string(m_layout.size()) + "," + std::to_string(m_layout.rank()) + "," + std::to_string(m_layout.node_id()) + "," + std::to_string(m_layout.local_id());
   switch (config.routing) {
     case detail::routing_type::NONE:
@@ -196,7 +196,7 @@ inline void comm::async(int dest, AsyncFunction fn, const SendArgs &...args) {
   m_send_buffer_bytes += bytes;
 
   std::string out_string(std::to_string(m_layout.rank()) + std::string(",") + std::to_string(next_dest) + 
-        std::string(",") + std::to_string(dest) + std::string(",") + std::to_string(bytes) + std::string(", async"));
+        std::string(",") + std::to_string(dest) + std::string(",") + std::to_string(bytes) + std::string(",async"));
   *m_trace_out << out_string << std::endl; 
 
   // // Add message size to header
@@ -368,7 +368,7 @@ inline void comm::mpi_send(const T &data, int dest, int tag,
   ASSERT_MPI(MPI_Send(packed.data(), packed_size, MPI_BYTE, dest, tag, comm));
 
   std::string out_string(std::to_string(m_layout.rank()) + std::string(",") + std::to_string(dest) + std::string(",") +
-      std::to_string(dest) + std::string(",") + std::to_string(packed_size) + std::string(", MPI_SEND"));
+      std::to_string(dest) + std::string(",") + std::to_string(packed_size) + std::string(",MPI_SEND"));
   *m_trace_out << out_string << std::endl; 
 }
 
@@ -911,7 +911,7 @@ inline void comm::handle_next_receive(MPI_Status                   status,
         int next_dest = m_router.next_hop(h.dest);
 
           std::string out_string(std::to_string(m_layout.rank()) + std::string(",") + std::to_string(next_dest) + 
-            std::to_string(h.dest) + std::string(",") + std::to_string(h.message_size) + std::string(", route"));
+            std::to_string(h.dest) + std::string(",") + std::to_string(h.message_size) + std::string(",route"));
           *m_trace_out << out_string << std::endl; 
         if (m_vec_send_buffers[next_dest].empty()) {
           m_send_dest_queue.push_back(next_dest);
