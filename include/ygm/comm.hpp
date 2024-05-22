@@ -19,6 +19,7 @@
 #include <ygm/detail/mpi.hpp>
 #include <ygm/detail/ygm_cereal_archive.hpp>
 #include <ygm/detail/ygm_ptr.hpp>
+#include <ygm/detail/shm_buffer.hpp>
 
 namespace ygm {
 
@@ -211,6 +212,9 @@ class comm {
   MPI_Comm m_comm_async;
   MPI_Comm m_comm_barrier;
   MPI_Comm m_comm_other;
+
+  shm::shm_buffer<std::byte>          m_shm_buffer;
+  std::vector<std::byte>              m_shm_read_buffer;
 
   std::vector<std::vector<std::byte>> m_vec_send_buffers;
   size_t                              m_send_buffer_bytes = 0;
