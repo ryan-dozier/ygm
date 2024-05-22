@@ -24,6 +24,17 @@ class comm_stats {
 
   comm_stats() : m_time_start(MPI_Wtime()) {}
 
+  void shm_insert(int dest, size_t bytes) {
+    m_shm_insert_count += 1;
+    m_shm_insert_bytes += bytes;
+
+  }
+
+  void shm_read(int dest, size_t bytes) {
+    m_shm_read_count += 1;
+    m_shm_read_bytes += bytes;
+  }
+
   void isend(int dest, size_t bytes) {
     m_isend_count += 1;
     m_isend_bytes += bytes;
@@ -60,6 +71,10 @@ class comm_stats {
     m_async_count                = 0;
     m_rpc_count                  = 0;
     m_route_count                = 0;
+    m_shm_insert_count           = 0;
+    m_shm_insert_bytes           = 0;
+    m_shm_read_count             = 0;
+    m_shm_read_bytes             = 0;
     m_isend_count                = 0;
     m_isend_bytes                = 0;
     m_isend_test_count           = 0;
@@ -77,6 +92,11 @@ class comm_stats {
   size_t get_async_count() const { return m_async_count; }
   size_t get_rpc_count() const { return m_rpc_count; }
   size_t get_route_count() const { return m_route_count; }
+
+  size_t get_shm_insert_count() const { return m_shm_insert_count; }
+  size_t get_shm_insert_bytes() const { return m_shm_insert_bytes; }
+  size_t get_shm_read_count() const { return m_shm_read_count; }
+  size_t get_shm_read_bytes() const { return m_shm_read_bytes; }
 
   size_t get_isend_count() const { return m_isend_count; }
   size_t get_isend_bytes() const { return m_isend_bytes; }
@@ -107,6 +127,11 @@ class comm_stats {
   size_t m_async_count = 0;
   size_t m_rpc_count   = 0;
   size_t m_route_count = 0;
+
+  size_t m_shm_insert_count = 0;
+  size_t m_shm_insert_bytes = 0;
+  size_t m_shm_read_count = 0;
+  size_t m_shm_read_bytes = 0;
 
   size_t m_isend_count      = 0;
   size_t m_isend_bytes      = 0;
