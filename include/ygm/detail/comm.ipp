@@ -9,6 +9,12 @@
 
 namespace ygm {
 
+
+struct comm::shm_recv_buffer {
+  std::vector<std::byte>              buffer;
+  uint32_t                            base_size;
+};
+
 struct comm::mpi_irecv_request {
   std::shared_ptr<std::byte[]> buffer;
   MPI_Request                  request;
@@ -59,7 +65,8 @@ inline void comm::comm_setup(MPI_Comm c) {
     post_new_irecv(recv_buffer);
   }
   m_shm_buffer = shm::shm_buffer(m_layout, config.shm_buffer_size, config.shm_panic_read_size);
-  m_shm_read_buffer.resize(config.irecv_size);
+  m_shm_read.base_size = 16 * config.irecv_size;
+  m_shm_read.buffer.resize(m_shm_read.base_size);
 }
 
 inline void comm::welcome(std::ostream &os) {
@@ -478,21 +485,29 @@ inline std::pair<uint64_t, uint64_t> comm::barrier_reduce_counts() {
     twin_req[0] = req;
     twin_req[1] = m_recv_queue.front().request;
 
+    int        shm_bytes{0};
     int        outcount{0};
     int        twin_indices[2];
     MPI_Status twin_status[2];
 
-    while(m_shm_buffer.bytes_available()) {
-      size_t bytes_read = m_shm_buffer.read(m_shm_read_buffer.data(), m_shm_read_buffer.capacity());
-      stats.shm_insert(m_layout.local_id(rank()), bytes_read);
-    }
-
     {
       auto timer = stats.waitsome_iallreduce();
-      while (outcount == 0) {
+      while (shm_bytes == 0 || outcount == 0) {
+        shm_bytes = m_shm_buffer.size();
+        if (shm_bytes > 0) {
+          if(shm_bytes > m_shm_read.buffer.capacity()) m_shm_read.buffer.resize(shm_bytes);
+          shm_bytes = m_shm_buffer.read(m_shm_read.buffer.data(), m_shm_read.buffer.capacity());
+        }
+        
         ASSERT_MPI(
             MPI_Testsome(2, twin_req, &outcount, twin_indices, twin_status));
       }
+    }
+
+    if(shm_bytes > 0) {
+      stats.shm_read(m_layout.local_id(rank()), shm_bytes);
+      handle_next_receive(m_shm_read.buffer.data(), shm_bytes);
+      m_shm_read.buffer.resize(m_shm_read.base_size);
     }
 
     for (int i = 0; i < outcount; ++i) {
@@ -934,26 +949,33 @@ inline bool comm::process_receive_queue() {
     return received_to_return;
   }
 
-  while (m_shm_buffer.bytes_available()) {
-    size_t bytes_read = m_shm_buffer.read(m_shm_read_buffer.data(), m_shm_read_buffer.capacity());
-    stats.shm_insert(m_layout.local_id(rank()), bytes_read);
-  }
-
   // if we have a pending iRecv, then we can issue a Testsome
-  if (m_send_queue.size() > config.num_isends_wait) {
+  if (m_send_queue.size() > config.num_isends_wait) { // TODO: should this have if shm.size() > config.num_shm_bytes_wait?
     MPI_Request twin_req[2];
     twin_req[0] = m_send_queue.front().request;
     twin_req[1] = m_recv_queue.front().request;
 
+    int        shm_bytes{0};
     int        outcount{0};
     int        twin_indices[2];
     MPI_Status twin_status[2];
     {
       auto timer = stats.waitsome_isend_irecv();
-      while (outcount == 0) {
+      while (shm_bytes == 0 || outcount == 0) {
+        shm_bytes = m_shm_buffer.size();
+        if (shm_bytes > 0) {
+          if(shm_bytes > m_shm_read.buffer.capacity()) m_shm_read.buffer.resize(shm_bytes);
+          shm_bytes = m_shm_buffer.read(m_shm_read.buffer.data(), m_shm_read.buffer.capacity());
+        }
+        
         ASSERT_MPI(
             MPI_Testsome(2, twin_req, &outcount, twin_indices, twin_status));
       }
+    }
+    if(shm_bytes > 0) {
+      stats.shm_read(m_layout.local_id(rank()), shm_bytes);
+      handle_next_receive(m_shm_read.buffer.data(), shm_bytes);
+      m_shm_read.buffer.resize(m_shm_read.base_size);
     }
     for (int i = 0; i < outcount; ++i) {
       if (twin_indices[i] == 0) {  // completed a iSend
@@ -996,6 +1018,17 @@ inline bool comm::local_process_incoming() {
   bool received_to_return = false;
 
   while (true) {
+
+    size_t shm_bytes = m_shm_buffer.size();
+    if (shm_bytes > 0) {
+      if(shm_bytes > m_shm_read.buffer.capacity()) m_shm_read.buffer.resize(shm_bytes);
+      shm_bytes = m_shm_buffer.read(m_shm_read.buffer.data(), m_shm_read.buffer.capacity());
+      stats.shm_read(m_layout.local_id(rank()), shm_bytes);
+      handle_next_receive(m_shm_read.buffer.data(), shm_bytes);
+      m_shm_read.buffer.resize(m_shm_read.base_size);
+    }
+        
+
     int        flag(0);
     MPI_Status status;
     ASSERT_MPI(MPI_Test(&(m_recv_queue.front().request), &flag, &status));
