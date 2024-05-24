@@ -54,7 +54,7 @@ struct backoff_helper {
 
   ~backoff_helper() {}
   void backoff() {
-    for(int i = 0; i < m_delay; i++) __asm__("nop\n\t"); // do nothing
+    for (int i = 0; i < m_delay; i++) __asm__("nop\n\t"); // do nothing
     if (m_delay < MAX_DELAY) m_delay <<= 1;
   }
   void reset() { m_delay = 1; }
@@ -65,15 +65,11 @@ struct backoff_helper {
 /**
  * @brief The panic buffer's job is to prevent the shm_buffer from deadlocking. It does this by 
  * allowing blocked insert operations (producers) to consume allowing for at least one process to
- * make progress. It is currently implemented as a deque of chunks.
- * @todo add support to re-use existing chunks, probably redesign to be 
- * std::deque<std::shared_ptr<std::vector<std::byte>>> then when we pop_front we store that ptr in 
- * an allocated pool, when doing a push_back, we either allocate a new chunk, or re-use an existing 
- * chunk
+ * make progress. It is currently implemented as a deque of memory chunks.
  */
 template <typename byte_type> class panic_buffer {
 public:
-  panic_buffer() {}
+  panic_buffer() { m_block_size = 1024; }
   panic_buffer(int panic_size) : m_block_size(panic_size) {}
   ~panic_buffer() {}
 
@@ -99,7 +95,7 @@ public:
 
   size_t read(byte_type* buffer, uint64_t buffer_size) {
     size_t read_amount = 0;
-    while(m_size != 0 && read_amount != buffer_size) {
+    while (m_size != 0 && read_amount != buffer_size) {
       size_t cur_read = m_panic_sizes.front();
       std::shared_ptr<std::vector<byte_type>> cur_panic_buffer = m_panic_buffer.front();
       if(read_amount + cur_read <= buffer_size) {
@@ -179,14 +175,13 @@ public:
     // technically this barrier is not needed, but it guarentees each shm region is created and
     // populated by the rank which will be reading from it.
     /** @todo mpi subcommunicator */
-    m_comm.barrier();
-    for(int i = 0; i < m_local_size; i++) {
+    m_comm.cf_barrier();
+    for (int i = 0; i < m_local_size; i++) {
       if(i != m_local_rank) {
         fname = m_filename + std::to_string(i);
         m_data[i] = this->open_new_shm_region<byte_type>(fname.c_str(), m_page_aligned_buffer_size);
       }
     }
-    m_comm.barrier();
   }
 
   ~shm_buffer() {
@@ -293,36 +288,31 @@ private:
       // when re-using buffers we have the chance to write over locations where the consuming rank
       // has read to so far. for the moment we'll have to wait until the consumer makes enough
       // progress to write to the buffer. we'll look into other methods to potentially improve this
-      size_t consumed_index = m_head[dest].load() % m_page_aligned_buffer_size;
       // here we care the a write will cross where the consumer is currently working because it's a
       // circular buffer the reader could be at index 0 and the writer could be at index 64 and it's
       // safe to write. I believe this solves this by checking if consumed counter falls between the
       // current written index, and the index + the partial write size.
-      for(int i = 1;
-            (cur_index < consumed_index) && ((cur_index + cur_msgsize) > consumed_index); 
-            i++, consumed_index = m_head[dest].load() % m_page_aligned_buffer_size) {
-        // current idea 
-          //  1) wait a few iterations
-          //  2) write do partial writes up to where the reader is working
-          //  3) we are writing to data[dest] from data[rank], check if head[rank] and tail[rank]
-          //     are near one another potentially causing another rank to stall
-            //  a) if potential stall detected do a pre-emptive read into the panic buffer
-            
-        // wait for backoff and loads to execute potentially clearing up the problem
+      for (size_t consumed_index = m_head[dest].load() % m_page_aligned_buffer_size;
+          (cur_index < consumed_index) && ((cur_index + cur_msgsize) > consumed_index); 
+          i++, consumed_index = m_head[dest].load() % m_page_aligned_buffer_size) {
+
         m_bh.backoff();
         // skip some iterations this can be ajusted
         int write_wait = 16;
-        if(i % write_wait) { // this should probably be allowed to write multiple times
-          // calc the available bytes between the tail and the head
-          size_t avail = consumed_index - cur_index; // TODO: work out if there are edge cases here
+        // calc the available bytes between the tail and the head
+        int avail = consumed_index - cur_index; // TODO: work out if there are edge cases here
+        if(avail > 0) { 
           // copy data in the buffer up to the tail
           std::memcpy(m_data[dest] + cur_index, msg + written_bytes, sizeof(byte_type) * avail);
           // update to reflect the partial write
           written_bytes += avail;
           cur_msgsize -= avail;
           cur_index = (block_start + written_bytes) % m_page_aligned_buffer_size;
-        } else if(i > write_wait) {
-          this->test_panic_buffer(i);
+        } else {
+          int write_amount = m_panic.get_panic_read_size();
+          if(write_amount != 0) {
+            m_panic.update_size(shm_read((void*)m_panic.get_new_buffer(), write_amount));
+          }
         }
       }
       m_bh.reset(); 
@@ -335,10 +325,13 @@ private:
     __sync_synchronize();
 
     // currently the only process that can make progress is the next sequential msg
-    for(int i = 1; m_tail[dest].load() != block_start; i++) { 
+    for (int i = 1; m_tail[dest].load() != block_start; i++) { 
       // wait for backoff and loads to execute potentially clearing up the problem
       m_bh.backoff();
-      this->test_panic_buffer(i);
+      int write_amount = m_panic.get_panic_read_size();
+      if(write_amount != 0) {
+        m_panic.update_size(shm_read((void*)m_panic.get_new_buffer(), write_amount));
+      }
     }
     m_bh.reset();
   
@@ -346,7 +339,14 @@ private:
     m_tail[dest].fetch_add(msgsize);
   }
 
-  // runs the panic buffer, this section is still under development
+  
+  /**
+   * @deprecated runs the panic buffer, this section is still under development
+   * this was probably really overengineered
+   * the idea was to pass the iteration id to the function to try and allow stuck processes to work
+   * itself out
+   * @param iteration 
+   */
   void test_panic_buffer(int iteration) {
     // probably pull these out and define. probably cleaner way to handle this. 
     const int inner_test = 63;
@@ -392,7 +392,7 @@ private:
     size_t read_amount = cur_tail - cur_head;
     if(read_amount == 0) return 0;
     if(read_amount > buffer_size) read_amount = buffer_size;
-    while(read_bytes != read_amount) {
+    while (read_bytes != read_amount) {
       //calculate current buffer, and index within
       size_t cur_index = (cur_head + read_bytes) % m_page_aligned_buffer_size;
 
@@ -427,7 +427,7 @@ private:
     // if we created the file, set the correct file size
     if(file != -1) fallocate(file, 0, 0, size);
     // if we failed to create the file, open the file for reading
-    while(file == -1) {
+    while (file == -1) {
       file = shm_open(filename, O_RDWR, 0600);
     }
 
@@ -436,7 +436,7 @@ private:
     do {
       fstat(file, &stat_buf);
       m_bh.backoff();
-    } while(stat_buf.st_size != size);
+    } while (stat_buf.st_size != size);
     m_bh.reset();
 
     // now that the shm_file is the correct size we can memory map to it.
@@ -474,7 +474,6 @@ private:
   const int                   m_local_rank;
   const int                   m_local_size;
 
-  const detail::layout&       m_layout;
   const comm::comm&           m_comm;
 
   // rank local

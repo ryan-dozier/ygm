@@ -34,6 +34,7 @@ class comm_router;
 
 class comm {
  private:
+  class shm_recv_buffer;
   class mpi_irecv_request;
   class mpi_isend_request;
   class header_t;
@@ -238,7 +239,7 @@ class comm {
   MPI_Comm m_comm_other;
 
   shm::shm_buffer<std::byte>          m_shm_buffer;
-  ygm::detail::byte_vector            m_shm_read_buffer;
+  shm_recv_buffer                     m_shm_read;
 
   std::vector<ygm::detail::byte_vector> m_vec_send_buffers;
   size_t                              m_send_buffer_bytes = 0;
