@@ -9,11 +9,6 @@
 namespace ygm {
 
 
-struct comm::shm_recv_buffer {
-  std::vector<std::byte>              buffer;
-  uint32_t                            base_size;
-};
-
 struct comm::mpi_irecv_request {
   std::shared_ptr<ygm::detail::byte_vector> buffer;
   MPI_Request                             request;
@@ -32,13 +27,15 @@ struct comm::header_t {
 inline comm::comm(int *argc, char ***argv)
     : pimpl_if(std::make_shared<detail::mpi_init_finalize>(argc, argv)),
       m_layout(MPI_COMM_WORLD),
-      m_router(m_layout, config.routing) {
+      m_router(m_layout, config.routing),
+      m_shm_buffer(m_layout, config.shm_buffer_size, config.shm_panic_read_size) {
   // pimpl_if = std::make_shared<detail::mpi_init_finalize>(argc, argv);
   comm_setup(MPI_COMM_WORLD);
 }
 
 inline comm::comm(MPI_Comm mcomm)
-    : m_layout(mcomm), m_router(m_layout, config.routing) {
+    : m_layout(mcomm), m_router(m_layout, config.routing), 
+      m_shm_buffer(m_layout, config.shm_buffer_size, config.shm_panic_read_size) {
   pimpl_if.reset();
   int flag(0);
   ASSERT_MPI(MPI_Initialized(&flag));
@@ -63,9 +60,9 @@ inline void comm::comm_setup(MPI_Comm c) {
     std::shared_ptr<ygm::detail::byte_vector> recv_buffer{new ygm::detail::byte_vector(config.irecv_size)};
     post_new_irecv(recv_buffer);
   }
-  m_shm_buffer = shm::shm_buffer(m_layout, config.shm_buffer_size, config.shm_panic_read_size);
-  m_shm_read.base_size = 16 * config.irecv_size;
-  m_shm_read.buffer.resize(m_shm_read.base_size);
+  
+  uint32_t base_size = 16 * config.irecv_size;
+  m_shm_read = shm::recv_buffer{std::make_shared<std::vector<std::byte>>(std::vector<std::byte>(base_size)), base_size};
 }
 
 inline void comm::welcome(std::ostream &os) {
@@ -484,7 +481,7 @@ inline std::pair<uint64_t, uint64_t> comm::barrier_reduce_counts() {
     twin_req[0] = req;
     twin_req[1] = m_recv_queue.front().request;
 
-    int        shm_bytes{0};
+    size_t     shm_bytes = 0;
     int        outcount{0};
     int        twin_indices[2];
     MPI_Status twin_status[2];
@@ -494,8 +491,8 @@ inline std::pair<uint64_t, uint64_t> comm::barrier_reduce_counts() {
       while (shm_bytes == 0 || outcount == 0) {
         shm_bytes = m_shm_buffer.size();
         if (shm_bytes > 0) {
-          if(shm_bytes > m_shm_read.buffer.capacity()) m_shm_read.buffer.resize(shm_bytes);
-          shm_bytes = m_shm_buffer.read(m_shm_read.buffer.data(), m_shm_read.buffer.capacity());
+          if(shm_bytes > m_shm_read.buffer->capacity()) m_shm_read.buffer->resize(shm_bytes);
+          shm_bytes = m_shm_buffer.read(m_shm_read.buffer->data(), m_shm_read.buffer->capacity());
         }
         
         ASSERT_MPI(
@@ -505,8 +502,8 @@ inline std::pair<uint64_t, uint64_t> comm::barrier_reduce_counts() {
 
     if(shm_bytes > 0) {
       stats.shm_read(m_layout.local_id(rank()), shm_bytes);
-      handle_next_receive(m_shm_read.buffer.data(), shm_bytes);
-      m_shm_read.buffer.resize(m_shm_read.base_size);
+      handle_next_receive(m_shm_read.buffer, shm_bytes);
+      m_shm_read.buffer->resize(m_shm_read.base_size);
     }
 
     for (int i = 0; i < outcount; ++i) {
@@ -950,7 +947,7 @@ inline bool comm::process_receive_queue() {
     twin_req[0] = m_send_queue.front().request;
     twin_req[1] = m_recv_queue.front().request;
 
-    int        shm_bytes{0};
+    size_t     shm_bytes = 0;
     int        outcount{0};
     int        twin_indices[2];
     MPI_Status twin_status[2];
@@ -959,8 +956,8 @@ inline bool comm::process_receive_queue() {
       while (shm_bytes == 0 || outcount == 0) {
         shm_bytes = m_shm_buffer.size();
         if (shm_bytes > 0) {
-          if(shm_bytes > m_shm_read.buffer.capacity()) m_shm_read.buffer.resize(shm_bytes);
-          shm_bytes = m_shm_buffer.read(m_shm_read.buffer.data(), m_shm_read.buffer.capacity());
+          if(shm_bytes > m_shm_read.buffer->capacity()) m_shm_read.buffer->resize(shm_bytes);
+          shm_bytes = m_shm_buffer.read(m_shm_read.buffer->data(), m_shm_read.buffer->capacity());
         }
         
         ASSERT_MPI(
@@ -969,8 +966,8 @@ inline bool comm::process_receive_queue() {
     }
     if(shm_bytes > 0) {
       stats.shm_read(m_layout.local_id(rank()), shm_bytes);
-      handle_next_receive(m_shm_read.buffer.data(), shm_bytes);
-      m_shm_read.buffer.resize(m_shm_read.base_size);
+      handle_next_receive(m_shm_read.buffer, shm_bytes);
+      m_shm_read.buffer->resize(m_shm_read.base_size);
     }
     for (int i = 0; i < outcount; ++i) {
       if (twin_indices[i] == 0) {  // completed a iSend
@@ -1016,11 +1013,11 @@ inline bool comm::local_process_incoming() {
 
     size_t shm_bytes = m_shm_buffer.size();
     if (shm_bytes > 0) {
-      if(shm_bytes > m_shm_read.buffer.capacity()) m_shm_read.buffer.resize(shm_bytes);
-      shm_bytes = m_shm_buffer.read(m_shm_read.buffer.data(), m_shm_read.buffer.capacity());
+      if(shm_bytes > m_shm_read.buffer->capacity()) m_shm_read.buffer->resize(shm_bytes);
+      shm_bytes = m_shm_buffer.read(m_shm_read.buffer->data(), m_shm_read.buffer->capacity());
       stats.shm_read(m_layout.local_id(rank()), shm_bytes);
-      handle_next_receive(m_shm_read.buffer.data(), shm_bytes);
-      m_shm_read.buffer.resize(m_shm_read.base_size);
+      handle_next_receive(m_shm_read.buffer, shm_bytes);
+      m_shm_read.buffer->resize(m_shm_read.base_size);
     }
         
 

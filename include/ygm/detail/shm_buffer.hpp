@@ -13,13 +13,18 @@
 #include <unistd.h>
 #include <memory>
 #include <vector>
-#include <dequeue>
-#include <detail/layout.hpp>
-#include <comm.hpp>
+#include <deque>
+#include <ygm/detail/layout.hpp>
+#include <ygm/comm.hpp>
 
 namespace shm {
 #define MAX_RANKS 256
 #define CACHELINE 64
+
+struct recv_buffer {
+  std::shared_ptr<std::vector<std::byte>> buffer;
+  uint32_t               base_size;
+};
 
 /** 
  *  @brief 
@@ -78,8 +83,8 @@ public:
   inline size_t get_panic_read_size() const { return m_block_size; }
 
   inline byte_type* get_new_buffer() {
-    if(m_reused_chunks.size() == 0) {
-      m_panic_buffer.push_back(std::make_shared(std::vector<byte_type>(m_block_size)));
+    if (m_reused_chunks.size() == 0) {
+      m_panic_buffer.push_back(std::make_shared<std::vector<byte_type>>(std::vector<byte_type>(m_block_size)));
     } else {
       m_panic_buffer.push_back(m_reused_chunks.back());
       m_reused_chunks.pop_back();
@@ -98,11 +103,11 @@ public:
     while (m_size != 0 && read_amount != buffer_size) {
       size_t cur_read = m_panic_sizes.front();
       std::shared_ptr<std::vector<byte_type>> cur_panic_buffer = m_panic_buffer.front();
-      if(read_amount + cur_read <= buffer_size) {
+      if (read_amount + cur_read <= buffer_size) {
         std::memcpy(buffer + read_amount, cur_panic_buffer->data(), cur_read);
         m_panic_sizes.pop_front();
-        m_panic_buffer.pop_front()
-        m_reused_chunks.push_back();
+        m_panic_buffer.pop_front();
+        m_reused_chunks.push_back(cur_panic_buffer);
       } else {
         cur_read = buffer_size - read_amount;
         std::memcpy(buffer + read_amount, cur_panic_buffer->data(), cur_read);
@@ -137,9 +142,12 @@ private:
 template <typename byte_type> class shm_buffer {
 public:
   static_assert(sizeof(byte_type) == 1, "shm_buffer requires byte sized type.\n");
-  shm_buffer(){}
-  shm_buffer(const comm::comm& comm, const detail::layout& layout, const size_t shm_size, const int panic_size) :
-                           m_comm(comm), m_local_rank(layout.local_id()), m_local_size(layout.local_size()), m_panic(panic_size) {
+  shm_buffer() = delete;
+
+  shm_buffer(const shm_buffer &c) = delete;
+  
+  shm_buffer(const ygm::detail::layout& layout, const size_t shm_size, const int panic_size) :
+                           m_local_rank(layout.local_id()), m_local_size(layout.local_size()), m_panic(panic_size) {
     m_filename   = std::string("ygm_shm_buffer_");
     m_res_fname  = std::string("ygm_shm_reserve");
     m_tail_fname = std::string("ygm_shm_tail");
@@ -148,14 +156,14 @@ public:
     auto pagesize = getpagesize();
     // calc the page aligned size for the shm buffer
     auto num_pages = shm_size / pagesize;
-    if(shm_size % pagesize != 0) num_pages++;
+    if (shm_size % pagesize != 0) num_pages++;
     m_page_aligned_buffer_size = num_pages * pagesize;
 
     // calc the page aligned size for the atomic counter arrays
     auto countersize = sizeof(atomic_counters) * MAX_RANKS;
     num_pages = countersize / pagesize;
 
-    if(countersize % pagesize != 0) num_pages++;
+    if (countersize % pagesize != 0) num_pages++;
     m_page_aligned_counter_size = num_pages * pagesize;
 
     // create the regions for the atomic counters
@@ -175,9 +183,9 @@ public:
     // technically this barrier is not needed, but it guarentees each shm region is created and
     // populated by the rank which will be reading from it.
     /** @todo mpi subcommunicator */
-    m_comm.cf_barrier();
+    MPI_Barrier(MPI_COMM_WORLD);
     for (int i = 0; i < m_local_size; i++) {
-      if(i != m_local_rank) {
+      if (i != m_local_rank) {
         fname = m_filename + std::to_string(i);
         m_data[i] = this->open_new_shm_region<byte_type>(fname.c_str(), m_page_aligned_buffer_size);
       }
@@ -185,18 +193,20 @@ public:
   }
 
   ~shm_buffer() {
-    if(m_data[m_local_rank] != nullptr)
+    if (m_data[m_local_rank] != nullptr)
       munmap(m_data[m_local_rank], m_page_aligned_buffer_size);
 
     munmap(m_reserve, m_page_aligned_counter_size);
     munmap(m_tail, m_page_aligned_counter_size);
-    if(m_local_rank == 0) {
+    if (m_local_rank == 0) {
       shm_unlink(m_res_fname.c_str());
       shm_unlink(m_tail_fname.c_str());
       shm_unlink(m_head_fname.c_str());
     }
     shm_unlink(std::string(m_filename + std::to_string(m_local_rank)).c_str());
   }
+
+
 
   inline size_t size() const { return m_panic.size() + this->shm_size(); }
 
@@ -219,7 +229,7 @@ public:
    * @param msgsize 
    */
   void insert(int dest, byte_type* msg, size_t msgsize) {
-    if(msgsize > 0 && dest < m_local_size) shm_insert(dest, msg, msgsize);
+    if (msgsize > 0 && dest < m_local_size) shm_insert(dest, msg, msgsize);
   }
 
   /**
@@ -233,13 +243,13 @@ public:
   size_t read(void* buffer, size_t buffer_size) {
     size_t read_amount = 0;
     // check if there is read data in the panic buffer
-    if(m_panic.size() != 0) {
+    if (m_panic.size() != 0) {
       // read any available data in the panic buffer 
       read_amount = m_panic.read((byte_type*)buffer, buffer_size);
     }
     // calculate the remaining space in the buffer
     size_t remaining_buffer = buffer_size - read_amount;
-    if(remaining_buffer > 0) {
+    if (remaining_buffer > 0) {
       // can move this into the next line, it just makes it less readable.
       byte_type* buffer_offset = (byte_type*)buffer + read_amount;
       read_amount += shm_read((void*)buffer_offset, remaining_buffer);
@@ -281,7 +291,7 @@ private:
       size_t cur_msgsize = msgsize - written_bytes;
 
       // check if the current msg will fit within the buffer
-      if(cur_index + cur_msgsize > m_page_aligned_buffer_size) {
+      if (cur_index + cur_msgsize > m_page_aligned_buffer_size) {
         cur_msgsize = m_page_aligned_buffer_size - cur_index;
       } 
       
@@ -294,14 +304,14 @@ private:
       // current written index, and the index + the partial write size.
       for (size_t consumed_index = m_head[dest].load() % m_page_aligned_buffer_size;
           (cur_index < consumed_index) && ((cur_index + cur_msgsize) > consumed_index); 
-          i++, consumed_index = m_head[dest].load() % m_page_aligned_buffer_size) {
+           consumed_index = m_head[dest].load() % m_page_aligned_buffer_size) {
 
         m_bh.backoff();
         // skip some iterations this can be ajusted
         int write_wait = 16;
         // calc the available bytes between the tail and the head
         int avail = consumed_index - cur_index; // TODO: work out if there are edge cases here
-        if(avail > 0) { 
+        if (avail > 0) { 
           // copy data in the buffer up to the tail
           std::memcpy(m_data[dest] + cur_index, msg + written_bytes, sizeof(byte_type) * avail);
           // update to reflect the partial write
@@ -310,7 +320,7 @@ private:
           cur_index = (block_start + written_bytes) % m_page_aligned_buffer_size;
         } else {
           int write_amount = m_panic.get_panic_read_size();
-          if(write_amount != 0) {
+          if (write_amount != 0) {
             m_panic.update_size(shm_read((void*)m_panic.get_new_buffer(), write_amount));
           }
         }
@@ -329,7 +339,7 @@ private:
       // wait for backoff and loads to execute potentially clearing up the problem
       m_bh.backoff();
       int write_amount = m_panic.get_panic_read_size();
-      if(write_amount != 0) {
+      if (write_amount != 0) {
         m_panic.update_size(shm_read((void*)m_panic.get_new_buffer(), write_amount));
       }
     }
@@ -355,19 +365,19 @@ private:
     size_t self_tail = m_tail[m_local_rank].load();
     int write_amount;
 
-    if(iteration % inner_test == 0) {
+    if (iteration % inner_test == 0) {
       // check if the available capacity is less than a local buffer size. this should reduce 
       // unecessary memcpys, we only want to use the panic buffer if theres a chance of a stall 
       size_t cur_avail = m_page_aligned_buffer_size - (self_tail - self_head);
-      if(cur_avail < m_panic.trigger()) {
+      if (cur_avail < m_panic.trigger()) {
         write_amount = m_panic.get_panic_read_size();
-        if(write_amount != 0) {
+        if (write_amount != 0) {
           m_panic.update_size(shm_read((void*)m_panic.get_new_buffer(), write_amount));
         }
       }
-    } else if(iteration % outer_test == 0) {
+    } else if (iteration % outer_test == 0) {
       write_amount = m_panic.get_panic_read_size();
-      if(write_amount != 0) {
+      if (write_amount != 0) {
         m_panic.update_size(shm_read((void*)m_panic.get_new_buffer(), write_amount));
       }
     } 
@@ -390,15 +400,15 @@ private:
     size_t read_bytes = 0;
     // do buffersize check
     size_t read_amount = cur_tail - cur_head;
-    if(read_amount == 0) return 0;
-    if(read_amount > buffer_size) read_amount = buffer_size;
+    if (read_amount == 0) return 0;
+    if (read_amount > buffer_size) read_amount = buffer_size;
     while (read_bytes != read_amount) {
       //calculate current buffer, and index within
       size_t cur_index = (cur_head + read_bytes) % m_page_aligned_buffer_size;
 
       read_size = read_amount - read_bytes;
       // check if the current read will extend past the end of the current buffer
-      if(cur_index + read_size > m_page_aligned_buffer_size) {
+      if (cur_index + read_size > m_page_aligned_buffer_size) {
         // modify the current read size to the end of this buffer
         read_size = m_page_aligned_buffer_size - cur_index;
       }
@@ -425,7 +435,7 @@ private:
   template <typename shm_type> shm_type* open_new_shm_region(const char* filename, size_t size) {
     int file = shm_open(filename, O_CREAT | O_RDWR | O_EXCL, 0600);
     // if we created the file, set the correct file size
-    if(file != -1) fallocate(file, 0, 0, size);
+    if (file != -1) fallocate(file, 0, 0, size);
     // if we failed to create the file, open the file for reading
     while (file == -1) {
       file = shm_open(filename, O_RDWR, 0600);
@@ -473,8 +483,6 @@ private:
   // MPI Info
   const int                   m_local_rank;
   const int                   m_local_size;
-
-  const comm::comm&           m_comm;
 
   // rank local
   panic_buffer<byte_type>     m_panic;
