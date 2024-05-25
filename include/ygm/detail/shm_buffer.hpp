@@ -22,8 +22,26 @@ namespace shm {
 #define CACHELINE 64
 
 struct recv_buffer {
-  std::shared_ptr<std::vector<std::byte>> buffer;
-  uint32_t               base_size;
+  std::shared_ptr<std::byte[]> buffer;
+  std::shared_ptr<std::byte[]> tmp;
+  uint32_t                     cur_size;
+  uint32_t                     base_size;
+
+  bool has_resized() {
+    return (cur_size != base_size) ? true : false;
+  }
+
+  void resize(size_t size) {
+    tmp = buffer;
+    buffer = std::shared_ptr<std::byte[]>{new std::byte[size]};
+    cur_size = size;
+  }
+
+  void reset() {
+    delete buffer.get();
+    buffer = tmp;
+    cur_size = base_size;
+  }
 };
 
 /** 

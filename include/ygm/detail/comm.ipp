@@ -62,7 +62,8 @@ inline void comm::comm_setup(MPI_Comm c) {
   }
   
   uint32_t base_size = 16 * config.irecv_size;
-  m_shm_read = shm::recv_buffer{std::make_shared<std::vector<std::byte>>(std::vector<std::byte>(base_size)), base_size};
+  std::shared_ptr<std::byte[]> recv_buffer{new std::byte[base_size]};
+  m_shm_read = shm::recv_buffer{recv_buffer, nullptr, base_size, base_size};
 }
 
 inline void comm::welcome(std::ostream &os) {
@@ -491,8 +492,8 @@ inline std::pair<uint64_t, uint64_t> comm::barrier_reduce_counts() {
       while (shm_bytes == 0 || outcount == 0) {
         shm_bytes = m_shm_buffer.size();
         if (shm_bytes > 0) {
-          if(shm_bytes > m_shm_read.buffer->capacity()) m_shm_read.buffer->resize(shm_bytes);
-          shm_bytes = m_shm_buffer.read(m_shm_read.buffer->data(), m_shm_read.buffer->capacity());
+          if(shm_bytes > m_shm_read.cur_size) m_shm_read.resize(shm_bytes);
+          shm_bytes = m_shm_buffer.read(m_shm_read.buffer.get(), m_shm_read.cur_size);
         }
         
         ASSERT_MPI(
@@ -503,7 +504,7 @@ inline std::pair<uint64_t, uint64_t> comm::barrier_reduce_counts() {
     if(shm_bytes > 0) {
       stats.shm_read(m_layout.local_id(rank()), shm_bytes);
       handle_next_receive(m_shm_read.buffer, shm_bytes);
-      m_shm_read.buffer->resize(m_shm_read.base_size);
+      if(m_shm_read.has_resized()) m_shm_read.reset();
     }
 
     for (int i = 0; i < outcount; ++i) {
@@ -956,8 +957,8 @@ inline bool comm::process_receive_queue() {
       while (shm_bytes == 0 || outcount == 0) {
         shm_bytes = m_shm_buffer.size();
         if (shm_bytes > 0) {
-          if(shm_bytes > m_shm_read.buffer->capacity()) m_shm_read.buffer->resize(shm_bytes);
-          shm_bytes = m_shm_buffer.read(m_shm_read.buffer->data(), m_shm_read.buffer->capacity());
+          if(shm_bytes > m_shm_read.cur_size) m_shm_read.resize(shm_bytes);
+          shm_bytes = m_shm_buffer.read(m_shm_read.buffer.get(), m_shm_read.cur_size);
         }
         
         ASSERT_MPI(
@@ -967,7 +968,7 @@ inline bool comm::process_receive_queue() {
     if(shm_bytes > 0) {
       stats.shm_read(m_layout.local_id(rank()), shm_bytes);
       handle_next_receive(m_shm_read.buffer, shm_bytes);
-      m_shm_read.buffer->resize(m_shm_read.base_size);
+      if(m_shm_read.has_resized()) m_shm_read.reset();
     }
     for (int i = 0; i < outcount; ++i) {
       if (twin_indices[i] == 0) {  // completed a iSend
@@ -1013,11 +1014,11 @@ inline bool comm::local_process_incoming() {
 
     size_t shm_bytes = m_shm_buffer.size();
     if (shm_bytes > 0) {
-      if(shm_bytes > m_shm_read.buffer->capacity()) m_shm_read.buffer->resize(shm_bytes);
-      shm_bytes = m_shm_buffer.read(m_shm_read.buffer->data(), m_shm_read.buffer->capacity());
+      if(shm_bytes > m_shm_read.cur_size) m_shm_read.resize(shm_bytes);
+        shm_bytes = m_shm_buffer.read(m_shm_read.buffer.get(), m_shm_read.cur_size);
       stats.shm_read(m_layout.local_id(rank()), shm_bytes);
       handle_next_receive(m_shm_read.buffer, shm_bytes);
-      m_shm_read.buffer->resize(m_shm_read.base_size);
+      if(m_shm_read.has_resized()) m_shm_read.reset();
     }
         
 
