@@ -490,7 +490,7 @@ inline std::pair<uint64_t, uint64_t> comm::barrier_reduce_counts() {
 
     {
       auto timer = stats.waitsome_iallreduce();
-      while (shm_bytes == 0 || outcount == 0) {
+      while (shm_bytes == 0 && outcount == 0) {
         shm_bytes = m_shm_buffer.size();
         if (shm_bytes > 0) {
           if(shm_bytes > m_shm_read.cur_size) m_shm_read.resize(shm_bytes);
@@ -959,7 +959,7 @@ inline bool comm::process_receive_queue() {
     MPI_Status twin_status[2];
     {
       auto timer = stats.waitsome_isend_irecv();
-      while (shm_bytes == 0 || outcount == 0) {
+      while (shm_bytes == 0 && outcount == 0) {
         shm_bytes = m_shm_buffer.size();
         if (shm_bytes > 0) {
           if(shm_bytes > m_shm_read.cur_size) m_shm_read.resize(shm_bytes);
