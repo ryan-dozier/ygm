@@ -17,9 +17,9 @@
 #include <ygm/detail/layout.hpp>
 #include <ygm/detail/meta/functional.hpp>
 #include <ygm/detail/mpi.hpp>
+#include <ygm/detail/shm_buffer.hpp>
 #include <ygm/detail/ygm_cereal_archive.hpp>
 #include <ygm/detail/ygm_ptr.hpp>
-#include <ygm/detail/shm_buffer.hpp>
 
 namespace ygm {
 

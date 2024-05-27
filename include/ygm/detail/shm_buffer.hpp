@@ -1,21 +1,26 @@
 #ifndef SHM_BUFFER_HPP
 #define SHM_BUFFER_HPP
-#include <assert.h>
-#include <cstring>
+/**
+ * @todo Commented out libraries aren't needed to build with ygm as included elsewhere, double check
+ * which ones are needed for standalone shm_region (no ygm)
+*/
+//#include <assert.h>
+//#include <array>
+#include <atomic>
+//#include <cstring>
+//#include <deque>
 #include <fcntl.h>
-#include <iostream>
-#include <string>
-#include <array>
+//#include <iostream>
+//#include <memory>
+//#include <string>
 #include <sys/mman.h>
 #include <sys/stat.h>
-#include <sys/types.h>
-#include <atomic>
+//#include <sys/types.h>
 #include <unistd.h>
-#include <memory>
-#include <vector>
-#include <deque>
-#include <ygm/detail/layout.hpp>
+//#include <vector>
+
 #include <ygm/comm.hpp>
+#include <ygm/detail/layout.hpp>
 
 namespace shm {
 #define MAX_RANKS 256
@@ -91,6 +96,10 @@ struct backoff_helper {
  * make progress. It is currently implemented as a deque of memory chunks.
  */
 template <typename byte_type> class panic_buffer {
+  struct panic_storage {
+    std::shared_ptr<std::vector<byte_type>> buffer;
+    size_t                                  size;  
+  };
 public:
   panic_buffer() { m_block_size = 1024; }
   panic_buffer(int panic_size) : m_block_size(panic_size) {}
@@ -101,17 +110,21 @@ public:
   inline size_t get_panic_read_size() const { return m_block_size; }
 
   inline byte_type* get_new_buffer() {
+    // maybe unecessary, having a size of 0 is not really supported, so if the size is 0 and a new
+    // chunk is requested return the unused chunk at the end
+    if(m_storage.size() != 0 && m_storage.back().size == 0) return m_storage.back().buffer->data();
     if (m_reused_chunks.size() == 0) {
-      m_panic_buffer.push_back(std::make_shared<std::vector<byte_type>>(std::vector<byte_type>(m_block_size)));
+      m_storage.push_back(panic_storage{std::make_shared<std::vector<byte_type>>(std::vector<byte_type>(m_block_size)),0});
     } else {
-      m_panic_buffer.push_back(m_reused_chunks.back());
+      m_storage.push_back(panic_storage{m_reused_chunks.back(),0});
       m_reused_chunks.pop_back();
     }
-    return m_panic_buffer.back()->data();
+    return m_storage.back().buffer->data();
   }
 
   inline void update_size(size_t size) {
-    m_panic_sizes.push_back(size);
+    if(size == 0) return; // i think this edge case is solved on line 113 : if(m_storage.back().size == 0)
+    m_storage.back().size = size;
     m_size += size;
     m_panic_usage++;
   }
@@ -119,19 +132,18 @@ public:
   size_t read(byte_type* buffer, uint64_t buffer_size) {
     size_t read_amount = 0;
     while (m_size != 0 && read_amount != buffer_size) {
-      size_t cur_read = m_panic_sizes.front();
-      std::shared_ptr<std::vector<byte_type>> cur_panic_buffer = m_panic_buffer.front();
+      size_t cur_read = m_storage.front().size;
+      std::shared_ptr<std::vector<byte_type>> cur_panic_buffer = m_storage.front().buffer;
       if (read_amount + cur_read <= buffer_size) {
         std::memcpy(buffer + read_amount, cur_panic_buffer->data(), cur_read);
-        m_panic_sizes.pop_front();
-        m_panic_buffer.pop_front();
+        m_storage.pop_front();
         m_reused_chunks.push_back(cur_panic_buffer);
       } else {
         cur_read = buffer_size - read_amount;
         std::memcpy(buffer + read_amount, cur_panic_buffer->data(), cur_read);
-        m_panic_sizes.front() -= cur_read;
+        m_storage.front().size -= cur_read;
         // probably a better way of doing this
-        std::memcpy(cur_panic_buffer->data(), cur_panic_buffer->data() + cur_read,  m_panic_sizes.front());
+        std::memcpy(cur_panic_buffer->data(), cur_panic_buffer->data() + cur_read, m_storage.front().size);
       }
       read_amount += cur_read;
       m_size -= cur_read;
@@ -139,15 +151,28 @@ public:
     return read_amount;    
   }
 
+std::string to_string() {
+    std::string out;
+    out += "Panic Info:\nGlobal Size: " + std::to_string(m_size) + "\nBlock Size: " + std::to_string(m_block_size) + "\n";
+    for(int i = 0; i < m_storage.size(); i++) {
+        out += "Buffer: " + std::to_string(i) + "\tSize: " + std::to_string(m_storage[i].size) + "\tData: ";
+        std::vector<byte_type>& cur_buff = *(m_storage[i].buffer);
+        for(int j = 0; j < m_storage[i].size; j++) {
+          out += (char)cur_buff[j];
+        }
+        out += "\n";
+    }
+    return out;
+}
+
 private:
-  std::deque<std::shared_ptr<std::vector<byte_type>>>   m_panic_buffer;
-  std::deque<size_t>                                    m_panic_sizes;
+  std::deque<panic_storage>                  m_storage;
   std::vector<std::shared_ptr<std::vector<byte_type>>>  m_reused_chunks;
   
-  size_t                m_size = 0;
-  size_t                m_block_size = 1024;
+  size_t m_size = 0;
+  size_t m_block_size = 1024;
   // Stats
-  size_t                m_panic_usage = 0;
+  size_t m_panic_usage = 0;
 };
 
 /**
@@ -325,16 +350,14 @@ private:
            consumed_index = m_head[dest].load() % m_page_aligned_buffer_size) {
 
         m_bh.backoff();
-        // skip some iterations this can be ajusted
-        int write_wait = 16;
         // calc the available bytes between the tail and the head
-        int avail = consumed_index - cur_index; // TODO: work out if there are edge cases here
-        if (avail > 0) { 
+        int cur_avail = consumed_index - cur_index; // TODO: work out if there are edge cases here
+        if (cur_avail > 0) { 
           // copy data in the buffer up to the tail
-          std::memcpy(m_data[dest] + cur_index, msg + written_bytes, sizeof(byte_type) * avail);
+          std::memcpy(m_data[dest] + cur_index, msg + written_bytes, sizeof(byte_type) * cur_avail);
           // update to reflect the partial write
-          written_bytes += avail;
-          cur_msgsize -= avail;
+          written_bytes += cur_avail;
+          cur_msgsize -= cur_avail;
           cur_index = (block_start + written_bytes) % m_page_aligned_buffer_size;
         } else {
           int write_amount = m_panic.get_panic_read_size();
@@ -353,11 +376,12 @@ private:
     __sync_synchronize();
 
     // currently the only process that can make progress is the next sequential msg
-    for (int i = 1; m_tail[dest].load() != block_start; i++) { 
+    while (m_tail[dest].load() != block_start) { 
       // wait for backoff and loads to execute potentially clearing up the problem
       m_bh.backoff();
       int write_amount = m_panic.get_panic_read_size();
-      if (write_amount != 0) {
+      // when serializing only panic if our buffer is 50% full
+      if (write_amount != 0 && this->utilized() > 0.5) { 
         m_panic.update_size(shm_read((void*)m_panic.get_new_buffer(), write_amount));
       }
     }
