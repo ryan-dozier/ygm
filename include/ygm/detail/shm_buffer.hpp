@@ -109,6 +109,16 @@ public:
   inline size_t usage() const { return m_panic_usage; }
   inline size_t get_panic_read_size() const { return m_block_size; }
 
+/**
+ * @brief Get the new buffer object.
+ * This usage should look like the following:
+ * buffer = panic.get_new_buffer();
+ * read_bytes = shm_read(buffer, panic.get_panic_read_size());
+ * panic.update_size(read_bytes);
+ * 
+ * 
+ * @return byte_type* 
+ */
   inline byte_type* get_new_buffer() {
     // maybe unecessary, having a size of 0 is not really supported, so if the size is 0 and a new
     // chunk is requested return the unused chunk at the end
@@ -122,13 +132,30 @@ public:
     return m_storage.back().buffer->data();
   }
 
+/**
+ * @brief updates the size of the last write.
+ * This usage should look like the following:
+ * buffer = panic.get_new_buffer();
+ * read_bytes = shm_read(buffer, panic.get_panic_read_size());
+ * panic.update_size(read_bytes);
+ * 
+ * @param size 
+ */
   inline void update_size(size_t size) {
-    if(size == 0) return; // i think this edge case is solved on line 113 : if(m_storage.back().size == 0)
+    if(size == 0) return; // i think this edge case is solved on line 115 : if(m_storage.back().size == 0)
     m_storage.back().size = size;
     m_size += size;
     m_panic_usage++;
   }
 
+
+/**
+ * @brief reads up to buffer_size bytes from the panic buffer into the buffer. 
+ * 
+ * @param buffer pointer to contiguous storage 
+ * @param buffer_size size of the contiguous storage
+ * @return size_t bytes actaully read into buffer
+ */
   size_t read(byte_type* buffer, uint64_t buffer_size) {
     size_t read_amount = 0;
     while (m_size != 0 && read_amount != buffer_size) {
@@ -139,7 +166,7 @@ public:
         m_storage.pop_front();
         m_reused_chunks.push_back(cur_panic_buffer);
       } else {
-        cur_read = buffer_size - read_amount;
+        cur_read = buffer_size - read_amount; // @todo edge cases?
         std::memcpy(buffer + read_amount, cur_panic_buffer->data(), cur_read);
         m_storage.front().size -= cur_read;
         // probably a better way of doing this
@@ -151,22 +178,23 @@ public:
     return read_amount;    
   }
 
-std::string to_string() {
-    std::string out;
-    out += "Panic Info:\nGlobal Size: " + std::to_string(m_size) + "\nBlock Size: " + std::to_string(m_block_size) + "\n";
-    for(int i = 0; i < m_storage.size(); i++) {
-        out += "Buffer: " + std::to_string(i) + "\tSize: " + std::to_string(m_storage[i].size) + "\tData: ";
-        std::vector<byte_type>& cur_buff = *(m_storage[i].buffer);
-        for(int j = 0; j < m_storage[i].size; j++) {
-          out += (char)cur_buff[j];
-        }
-        out += "\n";
-    }
-    return out;
-}
+  // debugging
+  std::string to_string() {
+      std::string out;
+      out += "Panic Info:\nGlobal Size: " + std::to_string(m_size) + "\nBlock Size: " + std::to_string(m_block_size) + "\n";
+      for(int i = 0; i < m_storage.size(); i++) {
+          out += "Buffer: " + std::to_string(i) + "\tSize: " + std::to_string(m_storage[i].size) + "\tData: ";
+          std::vector<byte_type>& cur_buff = *(m_storage[i].buffer);
+          for(int j = 0; j < m_storage[i].size; j++) {
+            out += (char)cur_buff[j];
+          }
+          out += "\n";
+      }
+      return out;
+  }
 
 private:
-  std::deque<panic_storage>                  m_storage;
+  std::deque<panic_storage>                             m_storage;
   std::vector<std::shared_ptr<std::vector<byte_type>>>  m_reused_chunks;
   
   size_t m_size = 0;
@@ -180,7 +208,7 @@ private:
  * designed as a shared memmory circular buffer for ranks on the same compute node to communicate
  * between eachother. The buffer supports variable msg sizes (insert and read operations are in
  * bytes).
- * @typedef byte_type, just a placeholder for std::byte, allowed for easier unit tests
+ * @typedef byte_type, just a placeholder for std::byte, allowed for easier unit tests using char
  */
 template <typename byte_type> class shm_buffer {
 public:
@@ -191,7 +219,7 @@ public:
   
   shm_buffer(const ygm::detail::layout& layout, const size_t shm_size, const int panic_size) :
                            m_local_rank(layout.local_id()), m_local_size(layout.local_size()), m_panic(panic_size) {
-    m_filename   = std::string("ygm_shm_buffer_");
+    m_buff_fname = std::string("ygm_shm_buffer_");
     m_res_fname  = std::string("ygm_shm_reserve");
     m_tail_fname = std::string("ygm_shm_tail");
     m_head_fname = std::string("ygm_shm_head");
@@ -221,7 +249,7 @@ public:
 
 
     // create the shm regions for the data
-    std::string fname = m_filename + std::to_string(m_local_rank);
+    std::string fname = m_buff_fname + std::to_string(m_local_rank);
     m_data[m_local_rank] = this->open_new_shm_region<byte_type>(fname.c_str(), m_page_aligned_buffer_size);
     // technically this barrier is not needed, but it guarentees each shm region is created and
     // populated by the rank which will be reading from it.
@@ -229,7 +257,7 @@ public:
     MPI_Barrier(MPI_COMM_WORLD);
     for (int i = 0; i < m_local_size; i++) {
       if (i != m_local_rank) {
-        fname = m_filename + std::to_string(i);
+        fname = m_buff_fname + std::to_string(i);
         m_data[i] = this->open_new_shm_region<byte_type>(fname.c_str(), m_page_aligned_buffer_size);
       }
     }
@@ -246,7 +274,7 @@ public:
       shm_unlink(m_tail_fname.c_str());
       shm_unlink(m_head_fname.c_str());
     }
-    shm_unlink(std::string(m_filename + std::to_string(m_local_rank)).c_str());
+    shm_unlink(std::string(m_buff_fname + std::to_string(m_local_rank)).c_str());
   }
 
 
@@ -267,9 +295,9 @@ public:
    * @brief Used by the producers. Inserts msgsize bytes into the destination shared buffer. This
    * function  is guarenteed to succeed so no return value.
    * 
-   * @param dest 
-   * @param msg 
-   * @param msgsize 
+   * @param dest destination write
+   * @param msg container of outgoing msgs
+   * @param msgsize size of the container
    */
   void insert(int dest, byte_type* msg, size_t msgsize) {
     if (msgsize > 0 && dest < m_local_size) shm_insert(dest, msg, msgsize);
@@ -279,9 +307,9 @@ public:
    * @brief Used by the consuming process. Reads up to buffersize bytes from the shared structure.
    * It returns the number of bytes that were actually read.
    * 
-   * @param buffer 
-   * @param buffer_size 
-   * @return size_t 
+   * @param buffer contiguous storage to read from the shm region
+   * @param buffer_size size of the contiguous storage
+   * @return size_t bytes actaully read into the buffer
    */
   size_t read(void* buffer, size_t buffer_size) {
     size_t read_amount = 0;
@@ -318,17 +346,17 @@ std::string to_string() const {
 
 
 private:
-  inline size_t shm_size() const { return m_tail[m_local_rank].load() - m_head[m_local_rank].load();}
+  inline size_t shm_size() const { return m_tail[m_local_rank].load() - m_head[m_local_rank].load(); }
 
   // Write to the SHM region, see insert(int dest, byte_type* msg, size_t msgsize) above for the
   // full producer process.
   void shm_insert(int dest, byte_type* msg, size_t msgsize) {
     // grab the current reserved index, and increment by the msgsize
-    size_t block_start = m_reserve[dest].fetch_add(msgsize);
+    size_t reserve_start = m_reserve[dest].fetch_add(msgsize);
     size_t written_bytes = 0;
     do {
       // from the full index grab the buffer id, and the index within the current logical buffer
-      size_t cur_index = (block_start + written_bytes) % m_page_aligned_buffer_size;
+      size_t cur_index = (reserve_start + written_bytes) % m_page_aligned_buffer_size;
 
       // in order to handle large msgs we may have to copy in several chunks
       size_t cur_msgsize = msgsize - written_bytes;
@@ -358,8 +386,8 @@ private:
           // update to reflect the partial write
           written_bytes += cur_avail;
           cur_msgsize -= cur_avail;
-          cur_index = (block_start + written_bytes) % m_page_aligned_buffer_size;
-        } else {
+          cur_index = (reserve_start + written_bytes) % m_page_aligned_buffer_size;
+        } else { // because we're unable to write (produce) we should consume to alleviate deadlock
           int write_amount = m_panic.get_panic_read_size();
           if (write_amount != 0) {
             m_panic.update_size(shm_read((void*)m_panic.get_new_buffer(), write_amount));
@@ -376,7 +404,7 @@ private:
     __sync_synchronize();
 
     // currently the only process that can make progress is the next sequential msg
-    while (m_tail[dest].load() != block_start) { 
+    while (m_tail[dest].load() != reserve_start) { 
       // wait for backoff and loads to execute potentially clearing up the problem
       m_bh.backoff();
       int write_amount = m_panic.get_panic_read_size();
@@ -431,7 +459,7 @@ private:
    * 
    * @param buffer 
    * @param buffer_size 
-   * @return size_t 
+   * @return number of read bytes 
    */
   size_t shm_read(void* buffer, size_t buffer_size) {
     // grab the current head and tail. The tail.load() is our linearization point for reading. 
@@ -511,7 +539,7 @@ private:
   size_t                      m_page_aligned_counter_size;
 
   //filenames
-  std::string                 m_filename;
+  std::string                 m_buff_fname;
   std::string                 m_res_fname;
   std::string                 m_tail_fname;
   std::string                 m_head_fname;
