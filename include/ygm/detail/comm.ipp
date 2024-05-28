@@ -494,7 +494,7 @@ inline std::pair<uint64_t, uint64_t> comm::barrier_reduce_counts() {
         shm_bytes = m_shm_buffer.size();
         if (shm_bytes > 0) {
           if(shm_bytes > m_shm_read.cur_size) m_shm_read.resize(shm_bytes);
-          shm_bytes = m_shm_buffer.read(m_shm_read.buffer.get(), m_shm_read.cur_size);
+          shm_bytes = m_shm_buffer.read(m_shm_read.buffer.get(), shm_bytes);
         }
         
         ASSERT_MPI(
@@ -963,7 +963,7 @@ inline bool comm::process_receive_queue() {
         shm_bytes = m_shm_buffer.size();
         if (shm_bytes > 0) {
           if(shm_bytes > m_shm_read.cur_size) m_shm_read.resize(shm_bytes);
-          shm_bytes = m_shm_buffer.read(m_shm_read.buffer.get(), m_shm_read.cur_size);
+          shm_bytes = m_shm_buffer.read(m_shm_read.buffer.get(), shm_bytes);
         }
         
         ASSERT_MPI(
@@ -1020,7 +1020,7 @@ inline bool comm::local_process_incoming() {
     size_t shm_bytes = m_shm_buffer.size();
     if (shm_bytes > 0) {
       if(shm_bytes > m_shm_read.cur_size) m_shm_read.resize(shm_bytes);
-        shm_bytes = m_shm_buffer.read(m_shm_read.buffer.get(), m_shm_read.cur_size);
+        shm_bytes = m_shm_buffer.read(m_shm_read.buffer.get(), shm_bytes);
       stats.shm_read(m_layout.local_id(rank()), shm_bytes);
       handle_next_receive(m_shm_read.buffer, shm_bytes);
       if(m_shm_read.has_resized()) m_shm_read.reset();
