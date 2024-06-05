@@ -28,14 +28,14 @@ inline comm::comm(int *argc, char ***argv)
     : pimpl_if(std::make_shared<detail::mpi_init_finalize>(argc, argv)),
       m_layout(MPI_COMM_WORLD),
       m_router(m_layout, config.routing),
-      m_shm_buffer(m_layout, config.shm_buffer_size, config.shm_panic_read_size) {
+      m_shm_exchange(m_layout, config.shm_buffer_size, config.shm_panic_read_size) {
   // pimpl_if = std::make_shared<detail::mpi_init_finalize>(argc, argv);
   comm_setup(MPI_COMM_WORLD);
 }
 
 inline comm::comm(MPI_Comm mcomm)
     : m_layout(mcomm), m_router(m_layout, config.routing), 
-      m_shm_buffer(m_layout, config.shm_buffer_size, config.shm_panic_read_size) {
+      m_shm_exchange(m_layout, config.shm_buffer_size, config.shm_panic_read_size) {
   pimpl_if.reset();
   int flag(0);
   ASSERT_MPI(MPI_Initialized(&flag));
@@ -490,10 +490,11 @@ inline std::pair<uint64_t, uint64_t> comm::barrier_reduce_counts() {
     {
       auto timer = stats.waitsome_iallreduce();
       while (shm_bytes == 0 && outcount == 0) {
-        shm_bytes = m_shm_buffer.size();
+        shm_bytes = m_shm_exchange.size(); 
         if (shm_bytes > 0) {
-          if(shm_bytes > m_shm_read.cur_size) m_shm_read.resize(shm_bytes);
-          shm_bytes = m_shm_buffer.read(m_shm_read.buffer.get(), shm_bytes);
+          if(shm_bytes > m_shm_read.cur_size) 
+            m_shm_read.resize(shm_bytes);
+          shm_bytes = m_shm_exchange.receive(m_shm_read.buffer.get(), shm_bytes);
         }
         
         ASSERT_MPI(
@@ -543,7 +544,7 @@ inline void comm::flush_send_buffer(int dest) {
     }
     request.buffer->swap(m_vec_send_buffers[dest]);
     if (m_layout.is_local(dest)) {
-      m_shm_buffer.insert(m_layout.local_id(dest), request.buffer->data(), request.buffer->size());
+      m_shm_exchange.send(m_layout.local_id(dest), request.buffer->data(), request.buffer->size());
       stats.shm_insert(m_layout.local_id(dest), request.buffer->size());
     } else {
       if (config.freq_issend > 0 && counter++ % config.freq_issend == 0) {
@@ -943,7 +944,7 @@ inline bool comm::process_receive_queue() {
   }
 
   // if we have a pending iRecv, then we can issue a Testsome
-  if (m_send_queue.size() > config.num_isends_wait) { // TODO: should this have if shm.size() > config.num_shm_bytes_wait?
+  if (m_send_queue.size() > config.num_isends_wait) { 
     MPI_Request twin_req[2];
     twin_req[0] = m_send_queue.front().request;
     twin_req[1] = m_recv_queue.front().request;
@@ -955,10 +956,10 @@ inline bool comm::process_receive_queue() {
     {
       auto timer = stats.waitsome_isend_irecv();
       while (shm_bytes == 0 && outcount == 0) {
-        shm_bytes = m_shm_buffer.size();
+        shm_bytes = m_shm_exchange.size();
         if (shm_bytes > 0) {
           if(shm_bytes > m_shm_read.cur_size) m_shm_read.resize(shm_bytes);
-          shm_bytes = m_shm_buffer.read(m_shm_read.buffer.get(), shm_bytes);
+          shm_bytes = m_shm_exchange.receive(m_shm_read.buffer.get(), shm_bytes);
         }
         
         ASSERT_MPI(
@@ -1012,15 +1013,15 @@ inline bool comm::local_process_incoming() {
 
   while (true) {
 
-    size_t shm_bytes = m_shm_buffer.size();
+    size_t shm_bytes = m_shm_exchange.size();
     if (shm_bytes > 0) {
+      received_to_return           = true;
       if(shm_bytes > m_shm_read.cur_size) m_shm_read.resize(shm_bytes);
-        shm_bytes = m_shm_buffer.read(m_shm_read.buffer.get(), shm_bytes);
+      shm_bytes = m_shm_exchange.receive(m_shm_read.buffer.get(), shm_bytes);
       stats.shm_read(m_layout.local_id(rank()), shm_bytes);
       handle_next_receive(m_shm_read.buffer, shm_bytes);
       if(m_shm_read.has_resized()) m_shm_read.reset();
-    }
-        
+    }    
 
     int        flag(0);
     MPI_Status status;

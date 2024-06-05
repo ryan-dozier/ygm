@@ -237,7 +237,7 @@ class comm {
   MPI_Comm m_comm_barrier;
   MPI_Comm m_comm_other;
 
-  shm::shm_buffer<std::byte> m_shm_buffer;
+  shm::shm_exchange m_shm_exchange;
   shm::recv_buffer           m_shm_read;
 
   std::vector<ygm::detail::byte_vector> m_vec_send_buffers;
