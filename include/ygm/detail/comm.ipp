@@ -61,10 +61,6 @@ inline void comm::comm_setup(MPI_Comm c) {
     std::shared_ptr<ygm::detail::byte_vector> recv_buffer{new ygm::detail::byte_vector(config.irecv_size)};
     post_new_irecv(recv_buffer);
   }
-  
-  uint32_t base_size = 16 * config.irecv_size;
-  std::shared_ptr<std::byte[]> recv_buffer{new std::byte[base_size]};
-  m_shm_read = shm::recv_buffer{recv_buffer, nullptr, base_size, base_size};
 }
 
 inline void comm::welcome(std::ostream &os) {

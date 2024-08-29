@@ -19,11 +19,7 @@
 #include <ygm/detail/layout.hpp>
 #include <ygm/detail/meta/functional.hpp>
 #include <ygm/detail/mpi.hpp>
-<<<<<<< HEAD
 #include <ygm/detail/shm_exchange.hpp>
-=======
-#include <ygm/detail/shm_buffer.hpp>
->>>>>>> 867e51aadda4f65b38cb04ebf8e1bb6dce8a80ba
 #include <ygm/detail/ygm_cereal_archive.hpp>
 #include <ygm/detail/ygm_ptr.hpp>
 
