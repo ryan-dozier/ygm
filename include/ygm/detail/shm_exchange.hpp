@@ -16,6 +16,7 @@
 #include <unistd.h>
 #include <vector>
 
+#include <ygm/detail/byte_vector.hpp>
 #include <ygm/comm.hpp>
 #include <ygm/detail/layout.hpp>
 
@@ -52,8 +53,13 @@ private:
  * filestystem to check if the new shm region was ready
  */ 
 struct backoff_helper {
-  backoff_helper() { m_delay = 1; }
+  backoff_helper() : MAX_DELAY(64) { m_delay = 1; }
+
   backoff_helper(int max) : MAX_DELAY(max) { m_delay = 1; }
+  backoff_helper(backoff_helper&)        = default;
+  backoff_helper(const backoff_helper&)  = default;
+  backoff_helper(backoff_helper&&)       = default;
+  backoff_helper& operator=(const backoff_helper& rhs) = default;
 
   ~backoff_helper() {}
   void backoff() {
@@ -62,29 +68,9 @@ struct backoff_helper {
   }
   void reset() { m_delay = 1; }
   int m_delay;
-  const int MAX_DELAY = 64;
+  int MAX_DELAY;
 };
 
-struct panic_buffer {
-  std::byte* get_region() { 
-    if(size + read_size > buffer.capacity()) 
-      buffer.resize(size + read_size); 
-    usage++;
-    return buffer.data() + size;
-  }
-
-  std::byte* get_region(size_t new_capacity) { 
-    if(new_capacity > buffer.capacity()) 
-      buffer.resize(new_capacity); 
-    return buffer.data() + size;
-  }
-  void update_size(size_t n) { size += n; }
-
-  std::vector<std::byte>      buffer;
-  size_t                      size;
-  size_t                      read_size;
-  size_t                      usage = 0;
-}
 
 /**
  * @brief SHM buffer for YGM, this structure is designed for many-producer single-consumer. It's 
@@ -96,20 +82,20 @@ struct panic_buffer {
 class shm_exchange {
 public:
   static_assert(sizeof(std::byte) == 1, "shm_exchange requires byte sized type.\n");
-  shm_exchange() = delete;
+  shm_exchange() : m_local_rank(-1), m_local_size(-1) {};
 
-  shm_exchange(const shm_exchange &c) = delete;
-  
-  shm_exchange(const ygm::detail::layout& layout, const size_t shm_size, const int panic_size, const int panic_read_size) :
-                           m_local_rank(layout.local_id()), m_local_size(layout.local_size()) {
+  shm_exchange(shm_exchange&)        = default;
+  shm_exchange(const shm_exchange&)  = default;
+  shm_exchange(shm_exchange&&)       = default;
+  shm_exchange& operator=(const shm_exchange& rhs) = default;
+
+  shm_exchange(const ygm::detail::layout& layout, const size_t shm_size, const size_t panic_size, const size_t panic_read_size) :
+                           m_local_rank(layout.local_id()), m_local_size(layout.local_size()), m_panic(panic_size), m_panic_read_size(panic_read_size) {
     m_buff_fname = std::string("ygm_shm_exchange_");
     m_res_fname  = std::string("ygm_shm_reserve");
     m_tail_fname = std::string("ygm_shm_tail");
     m_head_fname = std::string("ygm_shm_head");
 
-    m_panic.buffer.resize(panic_size);
-    m_panic.size = 0;
-    m_panic.read_size = panic_read_size;
     auto pagesize = getpagesize();
     // calc the page aligned size for the shm buffer
     auto num_pages = shm_size / pagesize;
@@ -156,6 +142,7 @@ public:
 
     munmap(m_reserve, m_page_aligned_counter_size);
     munmap(m_tail, m_page_aligned_counter_size);
+    // todo barrier
     if (m_local_rank == 0) {
       shm_unlink(m_res_fname.c_str());
       shm_unlink(m_tail_fname.c_str());
@@ -166,7 +153,7 @@ public:
 
 
 
-  inline size_t size() const { return m_panic.size + this->shm_size(); }
+  inline size_t size() const { return m_panic.size() + this->shm_size(); }
 
   inline bool bytes_available() const { return (this->size() > 0) ? true : false; }
    
@@ -198,11 +185,11 @@ public:
    * @param buffer_size size of the contiguous storage
    * @return size_t bytes actaully read into the buffer
    */
-  size_t receive(std::vector<std::byte>& buffer) {
+  size_t receive(std::shared_ptr<ygm::detail::byte_vector>& buffer) {
+    buffer->clear();
     size_t receive_amount = this->size();
-    shm_read((void*)m_panic.get_region(receive_amount), receive_amount - m_panic.size);
-    buffer.swap(m_panic.buffer);
-    m_panic.size = 0;
+    shm_read(receive_amount - m_panic.size());
+    buffer->swap(m_panic);
     return receive_amount;
   }
 
@@ -217,13 +204,14 @@ std::string to_string() const {
               result += std::string("\nutilize:\t" + std::to_string(utilized() * 100) + "%");
 
               result += std::string("\n\nPanic Buffer Info:");
-              result += std::string("\nsize:\t\t" + std::to_string(m_panic.size));
+              result += std::string("\nsize:\t\t" + std::to_string(m_panic.size()));
   return result;
 }
 
 
 private:
-  inline size_t shm_size() const { return m_tail[m_local_rank].load() - m_head[m_local_rank].load(); }
+  inline size_t shm_size() const {
+     return m_tail[m_local_rank].load() - m_head[m_local_rank].load(); }
 
   // Write to the SHM region, see insert(int dest, std::byte* msg, size_t msgsize) above for the
   // full producer process.
@@ -266,7 +254,7 @@ private:
           cur_index = (reserve_start + written_bytes) % m_page_aligned_buffer_size;
         } else { // because we're unable to write (produce) we should consume to alleviate deadlock
           if (this->utilized() > 0.5) {
-            m_panic.update_size(shm_read((void*)m_panic.get_region(), m_panic.read_size));
+            shm_read(m_panic_read_size);
           }
         }
       }
@@ -285,7 +273,7 @@ private:
       m_bh.backoff();
       // when serializing only panic if our buffer is 50% full
       if (this->utilized() > 0.5) { 
-        m_panic.update_size(shm_read((void*)m_panic.get_region(), m_panic.read_size));
+        shm_read(m_panic_read_size);
       }
     }
     m_bh.reset();
@@ -302,7 +290,7 @@ private:
    * @param buffer_size 
    * @return number of read bytes 
    */
-  size_t shm_read(void* buffer, size_t buffer_size) {
+  size_t shm_read(size_t max_read) {
     // grab the current head and tail. The tail.load() is our linearization point for reading. 
     // the only process which updates the head is the rank owning the buffer.
     size_t cur_tail = m_tail[m_local_rank].load();
@@ -312,7 +300,7 @@ private:
     // do buffersize check
     size_t read_amount = cur_tail - cur_head;
     if (read_amount == 0) return 0;
-    if (read_amount > buffer_size) read_amount = buffer_size;
+    if (read_amount > max_read) read_amount = max_read;
     while (read_bytes != read_amount) {
       //calculate current buffer, and index within
       size_t cur_index = (cur_head + read_bytes) % m_page_aligned_buffer_size;
@@ -324,7 +312,8 @@ private:
         read_size = m_page_aligned_buffer_size - cur_index;
       }
       // copy into the buffer, offet by partial reads, data is offset by the current index
-      std::memcpy((std::byte*)buffer + read_bytes, m_data[m_local_rank] + cur_index, sizeof(std::byte) * read_size);
+      //std::memcpy((std::byte*)buffer + read_bytes, m_data[m_local_rank] + cur_index, sizeof(std::byte) * read_size);
+      m_panic.push_bytes(m_data[m_local_rank] + cur_index, sizeof(std::byte) * read_size);
       read_bytes += read_size;
       // update the partial read, in the non-circular buffer to reduce atomic calls the reader would
       // only update when the whole msg was read. However, other processes may be waiting to write
@@ -363,8 +352,7 @@ private:
     // now that the shm_file is the correct size we can memory map to it.
     shm_type* shm_ptr = (shm_type*) mmap(NULL, size, PROT_READ | PROT_WRITE, MAP_SHARED, file, 0);
     if (shm_ptr == MAP_FAILED) {
-      std::cerr << "reserve mmap failed" << std::endl;
-      exit(-1);
+      throw std::runtime_error(std::string("mmap failed ") + strerror(errno) + std::string(" " + std::to_string(size)));
     }
     int msync_ret = msync(shm_ptr, size, MS_SYNC);
     if (msync_ret != 0) {
@@ -392,12 +380,12 @@ private:
   std::byte*                  m_data[MAX_RANKS];        // shm region for each rank
 
   // MPI Info
-  const int                   m_local_rank;
-  const int                   m_local_size;
+  int                         m_local_rank;
+  int                         m_local_size;
 
   // rank local
-  panic_buffer                m_panic;
-
+  ygm::detail::byte_vector    m_panic;
+  size_t                      m_panic_read_size;
   // backoff function, need to run tests with and without it.
   backoff_helper              m_bh;
 };

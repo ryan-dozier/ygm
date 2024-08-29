@@ -64,8 +64,7 @@ public:
     // now that the shm_file is the correct size we can memory map to it.
     m_data = (pointer) mmap(NULL, m_capacity, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, 0, 0);
     if (m_data == MAP_FAILED) {
-      std::cerr << strerror(errno) << std::endl;
-      throw std::runtime_error("mmap failed");
+      throw std::runtime_error(std::string("mmap failed ") + strerror(errno) + " " + std::to_string(set_capacity) + " " + std::to_string(m_capacity));
     }
   }
 
@@ -76,6 +75,8 @@ public:
   byte_vector(byte_vector&)        = default;
   byte_vector(const byte_vector&)  = default;
   byte_vector(byte_vector&&)       = default;
+  byte_vector& operator=(const byte_vector& rhs) = default;
+
 
   const reference operator[](int i) const { return m_data[i]; }
   reference operator[](int i) { return m_data[i]; }
@@ -102,7 +103,7 @@ public:
       // now that the shm_file is the correct size we can memory map to it.
       m_data = (pointer) mmap(NULL, m_capacity, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, 0, 0);
       if (m_data == MAP_FAILED) {
-        throw std::runtime_error("mmap failed");
+        throw std::runtime_error("byte_vector reserve mmap failed");
       }
       return;
     }

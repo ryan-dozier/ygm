@@ -19,7 +19,7 @@
 #include <ygm/detail/layout.hpp>
 #include <ygm/detail/meta/functional.hpp>
 #include <ygm/detail/mpi.hpp>
-#include <ygm/detail/shm_buffer.hpp>
+#include <ygm/detail/shm_exchange.hpp>
 #include <ygm/detail/ygm_cereal_archive.hpp>
 #include <ygm/detail/ygm_ptr.hpp>
 
@@ -237,15 +237,13 @@ class comm {
   MPI_Comm m_comm_barrier;
   MPI_Comm m_comm_other;
 
-  shm::shm_exchange m_shm_exchange;
-  shm::recv_buffer           m_shm_read;
 
   std::vector<ygm::detail::byte_vector> m_vec_send_buffers;
-  size_t                              m_send_buffer_bytes = 0;
-  std::deque<int>                     m_send_dest_queue;
+  size_t                                m_send_buffer_bytes = 0;
+  std::deque<int>                       m_send_dest_queue;
 
-  std::deque<mpi_irecv_request>                        m_recv_queue;
-  std::deque<mpi_isend_request>                        m_send_queue;
+  std::deque<mpi_irecv_request>                          m_recv_queue;
+  std::deque<mpi_isend_request>                          m_send_queue;
   std::vector<std::shared_ptr<ygm::detail::byte_vector>> m_free_send_buffers;
 
   size_t m_pending_isend_bytes = 0;
@@ -263,6 +261,10 @@ class comm {
   const detail::comm_environment config;
   const detail::layout           m_layout;
   detail::comm_router            m_router;
+
+  // These need the config and layout
+  shm::shm_exchange                         m_shm_exchange;
+  std::shared_ptr<ygm::detail::byte_vector> m_shm_read;
 
   detail::lambda_map<void (*)(comm *, cereal::YGMInputArchive *), uint16_t>
       m_lambda_map;
