@@ -135,7 +135,6 @@ public:
     }
   }
 
-
   ~shm_exchange() {
     if (m_data[m_local_rank] != nullptr)
       munmap(m_data[m_local_rank], m_page_aligned_buffer_size);
@@ -149,9 +148,8 @@ public:
       shm_unlink(m_head_fname.c_str());
     }
     shm_unlink(std::string(m_buff_fname + std::to_string(m_local_rank)).c_str());
+    MPI_Barrier(MPI_COMM_WORLD);
   }
-
-
 
   inline size_t size() const { return m_panic.size() + this->shm_size(); }
 
@@ -186,10 +184,12 @@ public:
    * @return size_t bytes actaully read into the buffer
    */
   size_t receive(std::shared_ptr<ygm::detail::byte_vector>& buffer) {
-    buffer->clear();
     size_t receive_amount = this->size();
-    shm_read(receive_amount - m_panic.size());
-    buffer->swap(m_panic);
+    if(receive_amount > 0) {
+      shm_read(receive_amount - m_panic.size());
+      buffer->swap(m_panic);
+      m_panic.clear();
+    }
     return receive_amount;
   }
 

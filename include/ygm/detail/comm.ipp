@@ -500,6 +500,7 @@ inline std::pair<uint64_t, uint64_t> comm::barrier_reduce_counts() {
     if(shm_bytes > 0) {
       stats.shm_read(m_layout.local_id(rank()), shm_bytes);
       handle_next_receive(m_shm_read, shm_bytes);
+      flush_all_local_and_process_incoming();
     }
 
     for (int i = 0; i < outcount; ++i) {
@@ -553,9 +554,9 @@ inline void comm::flush_send_buffer(int dest) {
       stats.isend(dest, request.buffer->size());
       m_pending_isend_bytes += request.buffer->size();
       m_send_queue.push_back(request);
-      if (!m_in_process_receive_queue) {
-        process_receive_queue();
-      }
+    }
+    if (!m_in_process_receive_queue) {
+      process_receive_queue();
     }
     m_send_buffer_bytes -= request.buffer->size();
   }
@@ -938,12 +939,11 @@ inline bool comm::process_receive_queue() {
   }
 
   // if we have a pending iRecv, then we can issue a Testsome
-  if (m_send_queue.size() > config.num_isends_wait) { // TODO: should this have if shm.size() > config.num_shm_bytes_wait?
+  while (m_send_queue.size() > config.num_isends_wait) { 
     MPI_Request twin_req[2];
     twin_req[0] = m_send_queue.front().request;
     twin_req[1] = m_recv_queue.front().request;
 
-    size_t     shm_bytes = 0;
     int        outcount{0};
     int        twin_indices[2];
     MPI_Status twin_status[2];
@@ -994,7 +994,7 @@ inline bool comm::process_receive_queue() {
     }
   }
 
-  received_to_return != local_process_incoming();
+  received_to_return |= local_process_incoming();
 
   m_in_process_receive_queue = false;
   return received_to_return;
@@ -1002,17 +1002,18 @@ inline bool comm::process_receive_queue() {
 
 inline bool comm::local_process_incoming() {
   bool received_to_return = false;
-
-  while (true) {
-
+  bool done_something = true;
+  while (done_something) {
+    done_something = false;
     size_t shm_bytes = m_shm_exchange.size();
     if (shm_bytes > 0) {
+      received_to_return           = true;
       shm_bytes = m_shm_exchange.receive(m_shm_read);
       stats.shm_read(m_layout.local_id(rank()), shm_bytes);
       handle_next_receive(m_shm_read, shm_bytes);
+      done_something = true;
     }
         
-
     int        flag(0);
     MPI_Status status;
     ASSERT_MPI(MPI_Test(&(m_recv_queue.front().request), &flag, &status));
@@ -1025,8 +1026,7 @@ inline bool comm::local_process_incoming() {
       ASSERT_MPI(MPI_Get_count(&status, MPI_BYTE, &buffer_size));
       stats.irecv(status.MPI_SOURCE, buffer_size);
       handle_next_receive(req_buffer.buffer, buffer_size);
-    } else {
-      break;  // not ready yet
+      done_something = true;
     }
   }
   return received_to_return;
