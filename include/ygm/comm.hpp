@@ -8,8 +8,10 @@
 #include <deque>
 #include <functional>
 #include <memory>
+#include <utility>
 #include <vector>
 
+#include <ygm/detail/byte_vector.hpp>
 #include <ygm/detail/comm_environment.hpp>
 #include <ygm/detail/comm_router.hpp>
 #include <ygm/detail/comm_stats.hpp>
@@ -17,6 +19,7 @@
 #include <ygm/detail/layout.hpp>
 #include <ygm/detail/meta/functional.hpp>
 #include <ygm/detail/mpi.hpp>
+#include <ygm/detail/shm_exchange.hpp>
 #include <ygm/detail/ygm_cereal_archive.hpp>
 #include <ygm/detail/ygm_ptr.hpp>
 
@@ -182,7 +185,7 @@ class comm {
  private:
   void comm_setup(MPI_Comm comm);
 
-  size_t pack_header(std::vector<std::byte> &packed, const int dest,
+  size_t pack_header(ygm::detail::byte_vector &packed, const int dest,
                      size_t size);
 
   std::pair<uint64_t, uint64_t> barrier_reduce_counts();
@@ -195,23 +198,23 @@ class comm {
 
   void flush_to_capacity();
 
-  void post_new_irecv(std::shared_ptr<std::byte[]> &recv_buffer);
+  void post_new_irecv(std::shared_ptr<ygm::detail::byte_vector> &recv_buffer);
 
   template <typename Lambda, typename... PackArgs>
-  size_t pack_lambda(std::vector<std::byte> &packed, Lambda l,
+  size_t pack_lambda(ygm::detail::byte_vector &packed, Lambda l,
                      const PackArgs &...args);
 
   template <typename Lambda, typename... PackArgs>
   void pack_lambda_broadcast(Lambda l, const PackArgs &...args);
 
   template <typename Lambda, typename RemoteLogicLambda, typename... PackArgs>
-  size_t pack_lambda_generic(std::vector<std::byte> &packed, Lambda l,
+  size_t pack_lambda_generic(ygm::detail::byte_vector &packed, Lambda l,
                              RemoteLogicLambda rll, const PackArgs &...args);
 
-  void queue_message_bytes(const std::vector<std::byte> &packed,
+  void queue_message_bytes(const ygm::detail::byte_vector             &packed,
                            const int                     dest);
 
-  void handle_next_receive(std::shared_ptr<std::byte[]> buffer,
+  void handle_next_receive(std::shared_ptr<ygm::detail::byte_vector> &buffer,
                            const size_t                 buffer_size);
 
   bool process_receive_queue();
@@ -234,13 +237,14 @@ class comm {
   MPI_Comm m_comm_barrier;
   MPI_Comm m_comm_other;
 
-  std::vector<std::vector<std::byte>> m_vec_send_buffers;
-  size_t                              m_send_buffer_bytes = 0;
-  std::deque<int>                     m_send_dest_queue;
 
-  std::deque<mpi_irecv_request>                        m_recv_queue;
-  std::deque<mpi_isend_request>                        m_send_queue;
-  std::vector<std::shared_ptr<std::vector<std::byte>>> m_free_send_buffers;
+  std::vector<ygm::detail::byte_vector> m_vec_send_buffers;
+  size_t                                m_send_buffer_bytes = 0;
+  std::deque<int>                       m_send_dest_queue;
+
+  std::deque<mpi_irecv_request>                          m_recv_queue;
+  std::deque<mpi_isend_request>                          m_send_queue;
+  std::vector<std::shared_ptr<ygm::detail::byte_vector>> m_free_send_buffers;
 
   size_t m_pending_isend_bytes = 0;
 
@@ -257,6 +261,10 @@ class comm {
   const detail::comm_environment config;
   const detail::layout           m_layout;
   detail::comm_router            m_router;
+
+  // These need the config and layout
+  shm::shm_exchange                         m_shm_exchange;
+  std::shared_ptr<ygm::detail::byte_vector> m_shm_read;
 
   detail::lambda_map<void (*)(comm *, cereal::YGMInputArchive *), uint16_t>
       m_lambda_map;

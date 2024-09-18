@@ -39,6 +39,12 @@ class comm_environment {
     if (const char* cc = std::getenv("YGM_COMM_BUFFER_SIZE_KB")) {
       buffer_size = convert<size_t>(cc) * 1024;
     }
+    if (const char* cc = std::getenv("YGM_SHM_BUFFER_SIZE_KB")) {
+      shm_buffer_size = convert<size_t>(cc) * 1024;
+    }
+    if (const char* cc = std::getenv("YGM_PANIC_READ_SIZE_KB")) {
+      shm_panic_read_size = convert<size_t>(cc) * 1024;
+    }
     if (const char* cc = std::getenv("YGM_COMM_NUM_IRECVS")) {
       num_irecvs = convert<size_t>(cc);
     }
@@ -70,6 +76,7 @@ class comm_environment {
   void print(std::ostream& os = std::cout) const {
     os << "======== ENVIRONMENT SETTINGS ========\n"
        << "YGM_COMM_BUFFER_SIZE_KB  = " << buffer_size / 1024 << "\n"
+       << "YGM_SHM_BUFFER_SIZE_KB   = " << shm_buffer_size / 1024 << "\n"
        << "YGM_COMM_NUM_IRECVS      = " << num_irecvs << "\n"
        << "YGM_COMM_IRECVS_SIZE_KB  = " << irecv_size / 1024 << "\n"
        << "YGM_COMM_NUM_ISENDS_WAIT = " << num_isends_wait << "\n"
@@ -98,6 +105,9 @@ class comm_environment {
 
   size_t num_isends_wait = 4;
   size_t freq_issend     = 8;
+
+  size_t shm_buffer_size = 64 * 1024 * 1024; 
+  size_t shm_panic_read_size = 1024;
 
   routing_type routing = routing_type::NONE;
 

@@ -19,22 +19,23 @@ int main() {
 
   ygm::detail::byte_vector buffer;
   {
-    cereal::YGMOutputArchive archive(buffer);
-    for (const auto& s : vec_sentences) { archive(s); }
+    for(const auto& s : vec_sentences) {
+      buffer.push_bytes(s.data(), s.size());
+    }
   }
 
   {
-    std::ifstream is("out.cereal", std::ios::binary);
-    cereal::YGMInputArchive archive(buffer.data(), buffer.size());
-
-    std::vector<std::string> out_sentences;
-    while (!archive.empty()) {
-      std::string tmp;
-      archive(tmp);
-      // std::cout << tmp << std::endl;
-      out_sentences.push_back(tmp);
+    std::vector<char> output(buffer.size());
+    memcpy((void*)output.data(), (void*)buffer.data(), buffer.size());
+    auto str_it = output.begin();
+    auto bv_it  = buffer.begin();
+    for(const auto& s : vec_sentences) {
+      for(int i = 0; i < s.size(); i++) {
+        ASSERT_RELEASE(s[i] == (char)(*bv_it) && s[i] == (*str_it));
+        bv_it++;
+        str_it++;
+      }
     }
-    YGM_ASSERT_RELEASE(vec_sentences == out_sentences);
   }
 
   return 0;
