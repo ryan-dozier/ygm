@@ -148,7 +148,6 @@ public:
       shm_unlink(m_head_fname.c_str());
     }
     shm_unlink(std::string(m_buff_fname + std::to_string(m_local_rank)).c_str());
-    MPI_Barrier(MPI_COMM_WORLD);
   }
 
   inline size_t size() const { return m_panic.size() + this->shm_size(); }
@@ -172,7 +171,7 @@ public:
    * @param msgsize size of the container
    */
   void send(int dest, std::byte* msg, size_t msgsize) {
-    if (msgsize > 0 && dest < m_local_size) shm_insert(dest, msg, msgsize);
+    if (msgsize > 0 && dest < m_local_size) shm_send(dest, msg, msgsize);
   }
 
   /**
@@ -186,7 +185,7 @@ public:
   size_t receive(std::shared_ptr<ygm::detail::byte_vector>& buffer) {
     size_t receive_amount = this->size();
     if(receive_amount > 0) {
-      shm_read(receive_amount - m_panic.size());
+      shm_receive(receive_amount - m_panic.size());
       buffer->swap(m_panic);
       m_panic.clear();
     }
@@ -215,7 +214,7 @@ private:
 
   // Write to the SHM region, see insert(int dest, std::byte* msg, size_t msgsize) above for the
   // full producer process.
-  void shm_insert(int dest, std::byte* msg, size_t msgsize) {
+  void shm_send(int dest, std::byte* msg, size_t msgsize) {
     // grab the current reserved index, and increment by the msgsize
     size_t reserve_start = m_reserve[dest].fetch_add(msgsize);
     size_t written_bytes = 0;
@@ -254,7 +253,7 @@ private:
           cur_index = (reserve_start + written_bytes) % m_page_aligned_buffer_size;
         } else { // because we're unable to write (produce) we should consume to alleviate deadlock
           if (this->utilized() > 0.5) {
-            shm_read(m_panic_read_size);
+            shm_receive(m_panic_read_size);
           }
         }
       }
@@ -273,7 +272,7 @@ private:
       m_bh.backoff();
       // when serializing only panic if our buffer is 50% full
       if (this->utilized() > 0.5) { 
-        shm_read(m_panic_read_size);
+        shm_receive(m_panic_read_size);
       }
     }
     m_bh.reset();
@@ -290,7 +289,7 @@ private:
    * @param buffer_size 
    * @return number of read bytes 
    */
-  size_t shm_read(size_t max_read) {
+  size_t shm_receive(size_t max_read) {
     // grab the current head and tail. The tail.load() is our linearization point for reading. 
     // the only process which updates the head is the rank owning the buffer.
     size_t cur_tail = m_tail[m_local_rank].load();

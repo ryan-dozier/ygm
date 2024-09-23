@@ -488,14 +488,14 @@ inline std::pair<uint64_t, uint64_t> comm::barrier_reduce_counts() {
           shm_bytes = m_shm_exchange.receive(m_shm_read);
         }
         
-        ASSERT_MPI(
+        YGM_ASSERT_MPI(
             MPI_Testsome(2, twin_req, &outcount, twin_indices, twin_status));
       }
     }
 
     if(shm_bytes > 0) {
-      stats.shm_read(m_layout.local_id(rank()), shm_bytes);
-      handle_next_receive(m_shm_read, shm_bytes);
+      stats.shm_receive(m_layout.local_id(rank()), shm_bytes);
+      handle_next_receive(m_shm_read, shm_bytes, ygm::detail::comm_type::local);
       flush_all_local_and_process_incoming();
     }
 
@@ -510,7 +510,7 @@ inline std::pair<uint64_t, uint64_t> comm::barrier_reduce_counts() {
         int buffer_size{0};
         YGM_ASSERT_MPI(MPI_Get_count(&twin_status[i], MPI_BYTE, &buffer_size));
         stats.irecv(twin_status[i].MPI_SOURCE, buffer_size);
-        handle_next_receive(req_buffer.buffer, buffer_size);
+        handle_next_receive(req_buffer.buffer, buffer_size, ygm::detail::comm_type::remote);
         flush_all_local_and_process_incoming();
       }
     }
@@ -536,14 +536,14 @@ inline void comm::flush_send_buffer(int dest) {
     request.buffer->swap(m_vec_send_buffers[dest]);
     if (m_layout.is_local(dest)) {
       m_shm_exchange.send(m_layout.local_id(dest), request.buffer->data(), request.buffer->size());
-      stats.shm_insert(m_layout.local_id(dest), request.buffer->size());
+      stats.shm_send(m_layout.local_id(dest), request.buffer->size());
     } else {
       if (config.freq_issend > 0 && counter++ % config.freq_issend == 0) {
-        ASSERT_MPI(MPI_Issend(request.buffer->data(), request.buffer->size(),
+        YGM_ASSERT_MPI(MPI_Issend(request.buffer->data(), request.buffer->size(),
                               MPI_BYTE, dest, 0, m_comm_async,
                               &(request.request)));
       } else {
-        ASSERT_MPI(MPI_Isend(request.buffer->data(), request.buffer->size(),
+        YGM_ASSERT_MPI(MPI_Isend(request.buffer->data(), request.buffer->size(),
                             MPI_BYTE, dest, 0, m_comm_async,
                             &(request.request)));
       }
@@ -875,7 +875,7 @@ inline void comm::queue_message_bytes(const ygm::detail::byte_vector            
 }
 
 inline void comm::handle_next_receive(std::shared_ptr<ygm::detail::byte_vector> &buffer,
-                                      const size_t buffer_size) {
+                                      const size_t buffer_size, const ygm::detail::comm_type from) {
   cereal::YGMInputArchive iarchive(buffer.get()->data(), buffer_size);
   while (!iarchive.empty()) {
     if (config.routing != detail::routing_type::NONE) {
@@ -915,7 +915,8 @@ inline void comm::handle_next_receive(std::shared_ptr<ygm::detail::byte_vector> 
       stats.rpc_execute();
     }
   }
-  post_new_irecv(buffer);
+  if(from == ygm::detail::comm_type::remote) 
+    post_new_irecv(buffer);
   flush_to_capacity();
 }
 
@@ -935,11 +936,12 @@ inline bool comm::process_receive_queue() {
   }
 
   // if we have a pending iRecv, then we can issue a Testsome
-  while (m_send_queue.size() > config.num_isends_wait) { 
+  if (m_send_queue.size() > config.num_isends_wait) { 
     MPI_Request twin_req[2];
     twin_req[0] = m_send_queue.front().request;
     twin_req[1] = m_recv_queue.front().request;
 
+    size_t     shm_bytes = 0;
     int        outcount{0};
     int        twin_indices[2];
     MPI_Status twin_status[2];
@@ -951,13 +953,13 @@ inline bool comm::process_receive_queue() {
           shm_bytes = m_shm_exchange.receive(m_shm_read);
         }
         
-        ASSERT_MPI(
+        YGM_ASSERT_MPI(
             MPI_Testsome(2, twin_req, &outcount, twin_indices, twin_status));
       }
     }
     if(shm_bytes > 0) {
-      stats.shm_read(m_layout.local_id(rank()), shm_bytes);
-      handle_next_receive(m_shm_read, shm_bytes);
+      stats.shm_receive(m_layout.local_id(rank()), shm_bytes);
+      handle_next_receive(m_shm_read, shm_bytes, ygm::detail::comm_type::local);
     }
     for (int i = 0; i < outcount; ++i) {
       if (twin_indices[i] == 0) {  // completed a iSend
@@ -972,7 +974,7 @@ inline bool comm::process_receive_queue() {
         int buffer_size{0};
         YGM_ASSERT_MPI(MPI_Get_count(&twin_status[i], MPI_BYTE, &buffer_size));
         stats.irecv(twin_status[i].MPI_SOURCE, buffer_size);
-        handle_next_receive(req_buffer.buffer, buffer_size);
+        handle_next_receive(req_buffer.buffer, buffer_size, ygm::detail::comm_type::remote);
       }
     }
   } else {
@@ -1005,8 +1007,8 @@ inline bool comm::local_process_incoming() {
     if (shm_bytes > 0) {
       received_to_return           = true;
       shm_bytes = m_shm_exchange.receive(m_shm_read);
-      stats.shm_read(m_layout.local_id(rank()), shm_bytes);
-      handle_next_receive(m_shm_read, shm_bytes);
+      stats.shm_receive(m_layout.local_id(rank()), shm_bytes);
+      handle_next_receive(m_shm_read, shm_bytes, ygm::detail::comm_type::local);
       done_something = true;
     }
         
@@ -1021,7 +1023,7 @@ inline bool comm::local_process_incoming() {
       int buffer_size{0};
       YGM_ASSERT_MPI(MPI_Get_count(&status, MPI_BYTE, &buffer_size));
       stats.irecv(status.MPI_SOURCE, buffer_size);
-      handle_next_receive(req_buffer.buffer, buffer_size);
+      handle_next_receive(req_buffer.buffer, buffer_size, ygm::detail::comm_type::remote);
       done_something = true;
     }
   }
