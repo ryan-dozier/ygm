@@ -493,12 +493,6 @@ inline std::pair<uint64_t, uint64_t> comm::barrier_reduce_counts() {
       }
     }
 
-    if(shm_bytes > 0) {
-      stats.shm_receive(m_layout.local_id(rank()), shm_bytes);
-      handle_next_shm_receive(m_shm_read, shm_bytes);
-      flush_all_local_and_process_incoming();
-    }
-
     for (int i = 0; i < outcount; ++i) {
       if (twin_indices[i] == 0) {  // completed a Iallreduce
         iallreduce_complete = true;
@@ -513,6 +507,12 @@ inline std::pair<uint64_t, uint64_t> comm::barrier_reduce_counts() {
         handle_next_mpi_receive(req_buffer.buffer, buffer_size);
         flush_all_local_and_process_incoming();
       }
+    }
+
+    if(shm_bytes > 0) {
+      stats.shm_receive(m_layout.local_id(rank()), shm_bytes);
+      handle_next_shm_receive(m_shm_read, shm_bytes);
+      flush_all_local_and_process_incoming();
     }
   }
   return {global_counts[0], global_counts[1]};
@@ -972,11 +972,7 @@ inline bool comm::process_receive_queue() {
             MPI_Testsome(2, twin_req, &outcount, twin_indices, twin_status));
       }
     }
-    if(shm_bytes > 0) {
-      stats.shm_receive(m_layout.local_id(rank()), shm_bytes);
-      received_to_return           = true;
-      handle_next_shm_receive(m_shm_read, shm_bytes);
-    }
+
     for (int i = 0; i < outcount; ++i) {
       if (twin_indices[i] == 0) {  // completed a iSend
         m_pending_isend_bytes -= m_send_queue.front().buffer->size();
@@ -992,6 +988,12 @@ inline bool comm::process_receive_queue() {
         stats.irecv(twin_status[i].MPI_SOURCE, buffer_size);
         handle_next_mpi_receive(req_buffer.buffer, buffer_size);
       }
+    }
+    
+    if(shm_bytes > 0) {
+      stats.shm_receive(m_layout.local_id(rank()), shm_bytes);
+      received_to_return           = true;
+      handle_next_shm_receive(m_shm_read, shm_bytes);
     }
   } else {
     if (!m_send_queue.empty()) {
@@ -1030,6 +1032,7 @@ inline bool comm::local_process_incoming() {
         
     int        flag(0);
     MPI_Status status;
+
     YGM_ASSERT_MPI(MPI_Test(&(m_recv_queue.front().request), &flag, &status));
     stats.irecv_test();
     if (flag) {
