@@ -30,7 +30,6 @@ class interrupt_mask;
 class comm_stats;
 class layout;
 class comm_router;
-enum recv_type { shm, mpi };
 }  // namespace detail
 
 class comm {
@@ -215,9 +214,14 @@ class comm {
   void queue_message_bytes(const ygm::detail::byte_vector             &packed,
                            const int                     dest);
 
-  void handle_next_receive(std::shared_ptr<ygm::detail::byte_vector> &buffer,
-                           const size_t                               buffer_size,
-                           const ygm::detail::recv_type              from);
+  void handle_next_shm_receive(std::shared_ptr<ygm::detail::byte_vector> &buffer,
+                           const size_t                               buffer_size);
+
+  void handle_next_mpi_receive(std::shared_ptr<ygm::detail::byte_vector> &buffer,
+                           const size_t                               buffer_size);
+
+  void handle_next_receive_helper(std::shared_ptr<ygm::detail::byte_vector> &buffer,
+                           const size_t                               buffer_size);
 
   bool process_receive_queue();
 
