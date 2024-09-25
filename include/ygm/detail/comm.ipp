@@ -130,7 +130,7 @@ inline comm::~comm() {
   YGM_ASSERT_RELEASE(MPI_Comm_free(&m_comm_async) == MPI_SUCCESS);
   YGM_ASSERT_RELEASE(MPI_Comm_free(&m_comm_barrier) == MPI_SUCCESS);
   YGM_ASSERT_RELEASE(MPI_Comm_free(&m_comm_other) == MPI_SUCCESS);
-
+  
   pimpl_if.reset();
 }
 
@@ -492,7 +492,7 @@ inline std::pair<uint64_t, uint64_t> comm::barrier_reduce_counts() {
             MPI_Testsome(2, twin_req, &outcount, twin_indices, twin_status));
       }
     }
-
+    
     for (int i = 0; i < outcount; ++i) {
       if (twin_indices[i] == 0) {  // completed a Iallreduce
         iallreduce_complete = true;
@@ -989,7 +989,7 @@ inline bool comm::process_receive_queue() {
         handle_next_mpi_receive(req_buffer.buffer, buffer_size);
       }
     }
-    
+
     if(shm_bytes > 0) {
       stats.shm_receive(m_layout.local_id(rank()), shm_bytes);
       received_to_return           = true;
@@ -1020,19 +1020,9 @@ inline bool comm::local_process_incoming() {
   bool received_to_return = false;
   bool done_something = true;
   while (done_something) {
-    done_something = false;
-    size_t shm_bytes = m_shm_exchange.size();
-    if (shm_bytes > 0) {
-      received_to_return           = true;
-      shm_bytes = m_shm_exchange.receive(m_shm_read);
-      stats.shm_receive(m_layout.local_id(rank()), shm_bytes);
-      handle_next_shm_receive(m_shm_read, shm_bytes);
-      done_something = true;
-    }
-        
+    done_something = false;    
     int        flag(0);
     MPI_Status status;
-
     YGM_ASSERT_MPI(MPI_Test(&(m_recv_queue.front().request), &flag, &status));
     stats.irecv_test();
     if (flag) {
@@ -1043,6 +1033,15 @@ inline bool comm::local_process_incoming() {
       YGM_ASSERT_MPI(MPI_Get_count(&status, MPI_BYTE, &buffer_size));
       stats.irecv(status.MPI_SOURCE, buffer_size);
       handle_next_mpi_receive(req_buffer.buffer, buffer_size);
+      done_something = true;
+    }
+
+    size_t shm_bytes = m_shm_exchange.size();
+    if (shm_bytes > 0) {
+      received_to_return           = true;
+      shm_bytes = m_shm_exchange.receive(m_shm_read);
+      stats.shm_receive(m_layout.local_id(rank()), shm_bytes);
+      handle_next_shm_receive(m_shm_read, shm_bytes);
       done_something = true;
     }
   }
