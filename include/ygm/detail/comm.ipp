@@ -241,6 +241,8 @@ inline void comm::barrier() {
   YGM_ASSERT_RELEASE(m_pre_barrier_callbacks.empty());
   YGM_ASSERT_RELEASE(m_send_dest_queue.empty());
 
+  //cf_barrier();
+ // cout() << "completed barrier" << std::endl;
   cf_barrier();
 }
 
@@ -484,20 +486,14 @@ inline std::pair<uint64_t, uint64_t> comm::barrier_reduce_counts() {
       auto timer = stats.waitsome_iallreduce();
       while (shm_bytes == 0 && outcount == 0) {
         shm_bytes = m_shm_exchange.size();
-        if (shm_bytes > 0) {
-          shm_bytes = m_shm_exchange.receive(m_shm_read);
-        }
         
         YGM_ASSERT_MPI(
             MPI_Testsome(2, twin_req, &outcount, twin_indices, twin_status));
       }
     }
-    
     for (int i = 0; i < outcount; ++i) {
-      if (twin_indices[i] == 0) {  // completed a Iallreduce
+      if (twin_indices[i] == 0) {  // completed a Iallreduce  1
         iallreduce_complete = true;
-        // std::cout << m_layout.rank() << ": iallreduce_complete: " <<
-        // global_counts[0] << " " << global_counts[1] << std::endl;
       } else { 
         mpi_irecv_request req_buffer = m_recv_queue.front();
         m_recv_queue.pop_front();
@@ -509,6 +505,7 @@ inline std::pair<uint64_t, uint64_t> comm::barrier_reduce_counts() {
       }
     }
 
+    shm_bytes = m_shm_exchange.receive(m_shm_read);
     if(shm_bytes > 0) {
       stats.shm_receive(m_layout.local_id(rank()), shm_bytes);
       handle_next_shm_receive(m_shm_read, shm_bytes);
@@ -524,7 +521,7 @@ inline std::pair<uint64_t, uint64_t> comm::barrier_reduce_counts() {
  * @param dest
  */
 inline void comm::flush_send_buffer(int dest) {
-  static size_t counter = 0;
+  size_t counter = 0;
   if (m_vec_send_buffers[dest].size() > 0) {
     mpi_isend_request request;
     if (m_free_send_buffers.empty()) {
@@ -964,10 +961,6 @@ inline bool comm::process_receive_queue() {
       auto timer = stats.waitsome_isend_irecv();
       while (shm_bytes == 0 && outcount == 0) {
         shm_bytes = m_shm_exchange.size();
-        if (shm_bytes > 0) {
-          shm_bytes = m_shm_exchange.receive(m_shm_read);
-        }
-        
         YGM_ASSERT_MPI(
             MPI_Testsome(2, twin_req, &outcount, twin_indices, twin_status));
       }
@@ -990,6 +983,7 @@ inline bool comm::process_receive_queue() {
       }
     }
 
+    shm_bytes = m_shm_exchange.receive(m_shm_read);
     if(shm_bytes > 0) {
       stats.shm_receive(m_layout.local_id(rank()), shm_bytes);
       received_to_return           = true;
