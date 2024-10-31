@@ -661,8 +661,8 @@ inline void comm::post_new_irecv(std::shared_ptr<ygm::detail::byte_vector> &recv
 
   //::madvise(recv_req.buffer.get(), config.irecv_size, MADV_DONTNEED);
   YGM_ASSERT_MPI(MPI_Irecv(recv_req.buffer.get()->data(), config.irecv_size, MPI_BYTE,
-                           MPI_ANY_SOURCE, MPI_ANY_TAG, m_comm_async,
-                           &(recv_req.request)));
+                       MPI_ANY_SOURCE, MPI_ANY_TAG, m_comm_async,
+                       &(recv_req.request)));
   m_recv_queue.push_back(recv_req);
 }
 
