@@ -47,6 +47,8 @@ private:
  * What it aims to do is reduce contention and busy waiting on atomics by having the process wait
  * to execute. If it tries an operation and fails the next time it will wait twice as long up to a
  * specified max_delay
+ * @brief Constructs a backoff_helper with a specified maximum delay.
+ * @param max The maximum delay for backoff.
  * 
  * @todo: Run some tests with and without, the backoff helper might be outdated with our new model.
  * in the past we ran into more areas of contention and expensive operations when calling to the 
@@ -91,10 +93,10 @@ public:
 
   shm_exchange(const ygm::detail::layout& layout, const size_t shm_size, const size_t panic_size, const size_t panic_read_size) :
                            m_local_rank(layout.local_id()), m_local_size(layout.local_size()), m_panic(panic_size), m_panic_read_size(panic_read_size) {
-    m_buff_fname = std::string("ygm_shm_exchange_");
-    m_res_fname  = std::string("ygm_shm_reserve");
-    m_tail_fname = std::string("ygm_shm_tail");
-    m_head_fname = std::string("ygm_shm_head");
+    m_data_fname = std::string("ygm_shm_exchange_");
+    m_reserve_fname  = std::string("ygm_shm_reserve");
+    m_written_fname = std::string("ygm_shm_tail");
+    m_read_fname = std::string("ygm_shm_head");
 
     auto pagesize = getpagesize();
     // calc the page aligned size for the shm buffer
@@ -110,18 +112,18 @@ public:
     m_page_aligned_counter_size = num_pages * pagesize;
 
     // create the regions for the atomic counters
-    m_reserve = this->open_new_shm_region<atomic_counters>(m_res_fname.c_str(), m_page_aligned_counter_size);
-    m_reserve[m_local_rank].store(0);
+    m_reserved_bytes = this->open_new_shm_region<atomic_counters>(m_reserve_fname.c_str(), m_page_aligned_counter_size);
+    m_reserved_bytes[m_local_rank].store(0);
 
-    m_tail    = this->open_new_shm_region<atomic_counters>(m_tail_fname.c_str(), m_page_aligned_counter_size);
-    m_tail[m_local_rank].store(0);
+    m_written_bytes    = this->open_new_shm_region<atomic_counters>(m_written_fname.c_str(), m_page_aligned_counter_size);
+    m_written_bytes[m_local_rank].store(0);
 
-    m_head    = this->open_new_shm_region<atomic_counters>(m_head_fname.c_str(), m_page_aligned_counter_size);
-    m_head[m_local_rank].store(0);
+    m_read_bytes    = this->open_new_shm_region<atomic_counters>(m_read_fname.c_str(), m_page_aligned_counter_size);
+    m_read_bytes[m_local_rank].store(0);
 
 
     // create the shm regions for the data
-    std::string fname = m_buff_fname + std::to_string(m_local_rank);
+    std::string fname = m_data_fname + std::to_string(m_local_rank);
     m_data[m_local_rank] = this->open_new_shm_region<std::byte>(fname.c_str(), m_page_aligned_buffer_size);
     // technically this barrier is not needed, but it guarentees each shm region is created and
     // populated by the rank which will be reading from it.
@@ -129,7 +131,7 @@ public:
     MPI_Barrier(MPI_COMM_WORLD);
     for (int i = 0; i < m_local_size; i++) {
       if (i != m_local_rank) {
-        fname = m_buff_fname + std::to_string(i);
+        fname = m_data_fname + std::to_string(i);
         m_data[i] = this->open_new_shm_region<std::byte>(fname.c_str(), m_page_aligned_buffer_size);
       }
     }
@@ -139,15 +141,15 @@ public:
     if (m_data[m_local_rank] != nullptr)
       munmap(m_data[m_local_rank], m_page_aligned_buffer_size);
 
-    munmap(m_reserve, m_page_aligned_counter_size);
-    munmap(m_tail, m_page_aligned_counter_size);
+    munmap(m_reserved_bytes, m_page_aligned_counter_size);
+    munmap(m_written_bytes, m_page_aligned_counter_size);
     // todo barrier
     if (m_local_rank == 0) {
-      shm_unlink(m_res_fname.c_str());
-      shm_unlink(m_tail_fname.c_str());
-      shm_unlink(m_head_fname.c_str());
+      shm_unlink(m_reserve_fname.c_str());
+      shm_unlink(m_written_fname.c_str());
+      shm_unlink(m_read_fname.c_str());
     }
-    shm_unlink(std::string(m_buff_fname + std::to_string(m_local_rank)).c_str());
+    shm_unlink(std::string(m_data_fname + std::to_string(m_local_rank)).c_str());
   }
 
   inline size_t size() const { return m_panic.size() + this->shm_size(); }
@@ -194,8 +196,8 @@ public:
 
 // Mostly for debugging purposes, but outputs the current status of the current rank's buffer.
 std::string to_string() const {
-  size_t head = m_head[m_local_rank].load();
-  size_t tail = m_tail[m_local_rank].load();
+  size_t head = m_read_bytes[m_local_rank].load();
+  size_t tail = m_written_bytes[m_local_rank].load();
 
   std::string result  = std::string("SHM Buffer Info:");
               result += std::string("\nrank:\t" + std::to_string(m_local_rank));
@@ -210,13 +212,13 @@ std::string to_string() const {
 
 private:
   inline size_t shm_size() const {
-     return m_tail[m_local_rank].load() - m_head[m_local_rank].load(); }
+     return m_written_bytes[m_local_rank].load() - m_read_bytes[m_local_rank].load(); }
 
   // Write to the SHM region, see insert(int dest, std::byte* msg, size_t msgsize) above for the
   // full producer process.
   void shm_send(int dest, std::byte* msg, size_t msgsize) {
     // grab the current reserved index, and increment by the msgsize
-    size_t reserve_start = m_reserve[dest].fetch_add(msgsize);
+    size_t reserve_start = m_reserved_bytes[dest].fetch_add(msgsize);
     size_t written_bytes = 0;
     do {
       // from the full index grab the buffer id, and the index within the current logical buffer
@@ -237,9 +239,9 @@ private:
       // circular buffer the reader could be at index 0 and the writer could be at index 64 and it's
       // safe to write. I believe this solves this by checking if consumed counter falls between the
       // current written index, and the index + the partial write size.
-      for (size_t consumed_index = m_head[dest].load() % m_page_aligned_buffer_size;
+      for (size_t consumed_index = m_read_bytes[dest].load() % m_page_aligned_buffer_size;
           (cur_index < consumed_index) && ((cur_index + cur_msgsize) > consumed_index); 
-           consumed_index = m_head[dest].load() % m_page_aligned_buffer_size) {
+           consumed_index = m_read_bytes[dest].load() % m_page_aligned_buffer_size) {
 
         m_bh.backoff();
         // calc the available bytes between the tail and the head
@@ -267,7 +269,7 @@ private:
     __sync_synchronize();
 
     // currently the only process that can make progress is the next sequential msg
-    while (m_tail[dest].load() != reserve_start) { 
+    while (m_written_bytes[dest].load() != reserve_start) { 
       // wait for backoff and loads to execute potentially clearing up the problem
       m_bh.backoff();
       // when serializing only panic if our buffer is 50% full
@@ -278,7 +280,7 @@ private:
     m_bh.reset();
   
     // increment the written size, the write becomes visable to other processes here
-    m_tail[dest].fetch_add(msgsize);
+    m_written_bytes[dest].fetch_add(msgsize);
   }
 
   /**
@@ -292,8 +294,8 @@ private:
   size_t shm_receive(size_t max_read) {
     // grab the current head and tail. The tail.load() is our linearization point for reading. 
     // the only process which updates the head is the rank owning the buffer.
-    size_t cur_tail = m_tail[m_local_rank].load();
-    size_t cur_head = m_head[m_local_rank].load();
+    size_t cur_tail = m_written_bytes[m_local_rank].load();
+    size_t cur_head = m_read_bytes[m_local_rank].load();
     size_t read_size = 0;
     size_t read_bytes = 0;
     // do buffersize check
@@ -317,7 +319,7 @@ private:
       // update the partial read, in the non-circular buffer to reduce atomic calls the reader would
       // only update when the whole msg was read. However, other processes may be waiting to write
       // into the region this is currenly consuming from.
-      m_head[m_local_rank].fetch_add(read_size);
+      m_read_bytes[m_local_rank].fetch_add(read_size);
     }
     return read_amount;
   }
@@ -344,7 +346,7 @@ private:
     struct stat stat_buf;
     do {
       fstat(file, &stat_buf);
-      m_bh.backoff();
+      m_bh.backoff();^
     } while (stat_buf.st_size != size);
     m_bh.reset();
 
@@ -367,15 +369,15 @@ private:
   size_t                      m_page_aligned_counter_size;
 
   //filenames
-  std::string                 m_buff_fname;
-  std::string                 m_res_fname;
-  std::string                 m_tail_fname;
-  std::string                 m_head_fname;
+  std::string                 m_data_fname;
+  std::string                 m_reserve_fname;
+  std::string                 m_written_fname;
+  std::string                 m_read_fname;
 
   // these need to be shared, consider if renaming these could increase readability
-  atomic_counters*            m_reserve;                // reserves space in shm
-  atomic_counters*            m_tail;                   // writer location
-  atomic_counters*            m_head;                   // reader location
+  atomic_counters*            m_reserved_bytes;         // reserves space in shm
+  atomic_counters*            m_written_bytes;          // writer location
+  atomic_counters*            m_read_bytes;             // reader location
   std::byte*                  m_data[MAX_RANKS];        // shm region for each rank
 
   // MPI Info

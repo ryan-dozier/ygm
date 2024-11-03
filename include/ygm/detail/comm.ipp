@@ -241,8 +241,6 @@ inline void comm::barrier() {
   YGM_ASSERT_RELEASE(m_pre_barrier_callbacks.empty());
   YGM_ASSERT_RELEASE(m_send_dest_queue.empty());
 
-  //cf_barrier();
- // cout() << "completed barrier" << std::endl;
   cf_barrier();
 }
 
