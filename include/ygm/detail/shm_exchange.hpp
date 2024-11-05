@@ -93,50 +93,94 @@ public:
 
   shm_exchange(const ygm::detail::layout& layout, const size_t shm_size, const size_t panic_size, const size_t panic_read_size) :
                            m_local_rank(layout.local_id()), m_local_size(layout.local_size()), m_panic(panic_size), m_panic_read_size(panic_read_size) {
-    m_data_fname = std::string("ygm_shm_exchange_");
-    m_reserve_fname  = std::string("ygm_shm_reserve");
-    m_written_fname = std::string("ygm_shm_tail");
-    m_read_fname = std::string("ygm_shm_head");
+    initialize_filenames();
+    initialize_page_aligned_sizes(shm_size);
+    initialize_atomic_counters();
+    initialize_shared_memory_regions();
 
+    // Ensure each shm region is created and populated by the rank which will be reading from it
+    MPI_Barrier(MPI_COMM_WORLD);
+    initialize_remote_shared_memory_regions();
+  }
+
+  shm_exchange(const size_t local_id, const size_t local_size, const size_t shm_size, const size_t panic_size, const size_t panic_read_size) :
+                           m_local_rank(local_id), m_local_size(local_size), m_panic(panic_size), m_panic_read_size(panic_read_size) {
+    initialize_filenames();
+    initialize_page_aligned_sizes(shm_size);
+    initialize_atomic_counters();
+    initialize_shared_memory_regions();
+
+    // Ensure each shm region is created and populated by the rank which will be reading from it
+    MPI_Barrier(MPI_COMM_WORLD);
+    initialize_remote_shared_memory_regions();
+  }
+
+  /**
+   * @brief This private block contains helpoer functions for the constructor to initialize the shm exchange
+   * they should not be called outside of the constructor.
+   */
+private:
+  /**
+   * @brief Initializes the filenames for shared memory regions and atomic counters.
+   */
+  void initialize_filenames() {
+    m_data_fname = "ygm_shm_exchange_";
+    m_reserve_fname = "ygm_shm_reserve";
+    m_written_fname = "ygm_shm_tail";
+    m_read_fname = "ygm_shm_head";
+  }
+
+  /**
+   * @brief Calculates and sets the page-aligned sizes for the shared memory buffer and atomic counter arrays.
+   * 
+   * @param shm_size The size of the shared memory buffer.
+   */
+  inline void initialize_page_aligned_sizes(const size_t shm_size) {
     auto pagesize = getpagesize();
-    // calc the page aligned size for the shm buffer
-    auto num_pages = shm_size / pagesize;
-    if (shm_size % pagesize != 0) num_pages++;
-    m_page_aligned_buffer_size = num_pages * pagesize;
 
-    // calc the page aligned size for the atomic counter arrays
+    // Calculate the page-aligned size for the shared memory buffer
+    m_page_aligned_buffer_size = ((shm_size + pagesize - 1) / pagesize) * pagesize;
+
+    // Calculate the page-aligned size for the atomic counter arrays
     auto countersize = sizeof(atomic_counters) * MAX_RANKS;
-    num_pages = countersize / pagesize;
+    m_page_aligned_counter_size = ((countersize + pagesize - 1) / pagesize) * pagesize;
+  }
 
-    if (countersize % pagesize != 0) num_pages++;
-    m_page_aligned_counter_size = num_pages * pagesize;
-
-    // create the regions for the atomic counters
-    m_reserved_bytes = this->open_new_shm_region<atomic_counters>(m_reserve_fname.c_str(), m_page_aligned_counter_size);
+  /**
+   * @brief Initializes the atomic counters for reserved, written, and read bytes.
+   */
+  inline void initialize_atomic_counters() {
+    m_reserved_bytes = open_new_shm_region<atomic_counters>(m_reserve_fname.c_str(), m_page_aligned_counter_size);
     m_reserved_bytes[m_local_rank].store(0);
 
-    m_written_bytes    = this->open_new_shm_region<atomic_counters>(m_written_fname.c_str(), m_page_aligned_counter_size);
+    m_written_bytes = open_new_shm_region<atomic_counters>(m_written_fname.c_str(), m_page_aligned_counter_size);
     m_written_bytes[m_local_rank].store(0);
 
-    m_read_bytes    = this->open_new_shm_region<atomic_counters>(m_read_fname.c_str(), m_page_aligned_counter_size);
+    m_read_bytes = open_new_shm_region<atomic_counters>(m_read_fname.c_str(), m_page_aligned_counter_size);
     m_read_bytes[m_local_rank].store(0);
+  }
 
-
-    // create the shm regions for the data
+  /**
+   * @brief Initializes the shared memory regions for the local rank.
+   */
+  inline void initialize_shared_memory_regions() {
     std::string fname = m_data_fname + std::to_string(m_local_rank);
-    m_data[m_local_rank] = this->open_new_shm_region<std::byte>(fname.c_str(), m_page_aligned_buffer_size);
-    // technically this barrier is not needed, but it guarentees each shm region is created and
-    // populated by the rank which will be reading from it.
-    /** @todo mpi subcommunicator */
-    MPI_Barrier(MPI_COMM_WORLD);
+    m_data[m_local_rank] = open_new_shm_region<std::byte>(fname.c_str(), m_page_aligned_buffer_size);
+  }
+
+  /**
+   * @brief Initializes the shared memory regions for remote ranks.
+   */
+  inline void initialize_remote_shared_memory_regions() {
     for (int i = 0; i < m_local_size; i++) {
       if (i != m_local_rank) {
-        fname = m_data_fname + std::to_string(i);
-        m_data[i] = this->open_new_shm_region<std::byte>(fname.c_str(), m_page_aligned_buffer_size);
+        std::string fname = m_data_fname + std::to_string(i);
+        m_data[i] = open_new_shm_region<std::byte>(fname.c_str(), m_page_aligned_buffer_size);
       }
     }
   }
 
+public:
   ~shm_exchange() {
     if (m_data[m_local_rank] != nullptr)
       munmap(m_data[m_local_rank], m_page_aligned_buffer_size);
@@ -384,7 +428,7 @@ private:
     }
 
     if (msync(shm_ptr, size, MS_SYNC) != 0) {
-      throw std::runtime_error("msync failed: " + strerror(errno));
+      throw std::runtime_error(std::string("msync failed: ") + strerror(errno));
     }
     // yes its safe to close a mapped file
     close(file);
