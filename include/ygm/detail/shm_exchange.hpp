@@ -33,13 +33,13 @@ namespace shm {
  *  to eachother in the array. The helper functions here are from the underying atomic, just here
  *  for code readability to not have to do array[i].cnt.load()
  */
-struct alignas(CACHELINE) atomic_counters {
+struct atomic_counters {
 public:
   inline size_t load() const { return cnt.load(); }
-  inline void store(size_t n) { cnt.store(n); }
-  inline size_t fetch_add(size_t n) { return cnt.fetch_add(n); }
+  inline void store(const size_t n) { cnt.store(n); }
+  inline size_t fetch_add(const size_t n) { return cnt.fetch_add(n); }
 private:
-  std::atomic<size_t> cnt;
+  alignas(CACHELINE) std::atomic<size_t> cnt;
 };
 
 /**
@@ -57,7 +57,7 @@ private:
 struct backoff_helper {
   backoff_helper() : MAX_DELAY(64) { m_delay = 1; }
 
-  backoff_helper(int max) : MAX_DELAY(max) { m_delay = 1; }
+  backoff_helper(const int max) : MAX_DELAY(max) { m_delay = 1; }
   backoff_helper(backoff_helper&)        = default;
   backoff_helper(const backoff_helper&)  = default;
   backoff_helper(backoff_helper&&)       = default;
@@ -70,7 +70,7 @@ struct backoff_helper {
   }
   void reset() { m_delay = 1; }
   int m_delay;
-  int MAX_DELAY;
+  const int MAX_DELAY;
 };
 
 
@@ -172,7 +172,7 @@ private:
    * @brief Initializes the shared memory regions for the local rank.
    */
   inline void initialize_shared_memory_regions() {
-    std::string fname = m_filenames.m_data_fname + std::to_string(m_local_rank);
+    std::string fname = get_rank_filename((const int) m_local_rank);
     m_data[m_local_rank] = open_new_shm_region<std::byte>(fname.c_str(), m_page_aligned_buffer_size);
   }
 
@@ -182,10 +182,14 @@ private:
   inline void initialize_remote_shared_memory_regions() {
     for (int i = 0; i < m_local_size; i++) {
       if (i != m_local_rank) {
-        std::string fname = m_filenames.m_data_fname + std::to_string(i);
+        std::string fname = get_rank_filename((const int) i);
         m_data[i] = open_new_shm_region<std::byte>(fname.c_str(), m_page_aligned_buffer_size);
       }
     }
+  }
+
+  inline std::string get_rank_filename(const int rank) const {
+    return m_filenames.m_data_fname + std::to_string(rank);
   }
 
 public:
@@ -207,7 +211,7 @@ public:
       shm_unlink(m_filenames.m_written_fname.c_str());
       shm_unlink(m_filenames.m_read_fname.c_str());
     }
-    shm_unlink(std::string(m_filenames.m_data_fname + std::to_string(m_local_rank)).c_str());
+    shm_unlink(std::string(get_rank_filename((const int) m_local_rank)).c_str());
   }
 
   inline size_t size() const { return m_panic.size() + this->shm_size(); }
@@ -220,7 +224,7 @@ public:
    * 
    * @return double 
    */
-  inline double utilized() const { return (double)this->size() / m_page_aligned_buffer_size; }
+  inline double utilized() const { return static_cast<double>(this->size()) / m_page_aligned_buffer_size; }
 
   /**
    * @brief Used by the producers. Inserts msgsize bytes into the destination shared buffer. This
@@ -231,7 +235,7 @@ public:
    * @param msgsize size of the container
    */
   inline void send(const int dest, std::byte* msg, const size_t msgsize) {
-    if (msgsize > 0 && dest < m_local_size) shm_send(dest, (const std::byte*) msg, msgsize);
+    if (msgsize > 0 && 0 <= dest < m_local_size) shm_send(dest, (const std::byte*) msg, msgsize);
   }
 
   inline void send(const int dest, std::shared_ptr<ygm::detail::byte_vector>& buffer) {
@@ -320,8 +324,8 @@ private:
 
     // Ensure other process make progress before updating the written size
     wait_for_remote_progress(dest, reserve_start);
-    // increment the written size, the write becomes visable to other processes here
 
+    // increment the written size, the write becomes visable to other processes here
     m_written_bytes[dest].fetch_add(msgsize);
   }
 
@@ -396,7 +400,8 @@ inline void wait_for_remote_progress(int dest, size_t reserve_start) {
  * @return The number of bytes actually read.
  */
   size_t shm_receive(size_t max_read) {
-    // Get the current readbytes and writtenbytes pointers. The writtenbytes.load() is our linearization point for reading.
+    // Get the current readbytes and writtenbytes pointers.
+    // The writtenbytes.load() is our linearization point for reading.
     // The only process which updates the readbytes is the rank owning the buffer.
     size_t cur_tail = m_written_bytes[m_local_rank].load();
     size_t cur_head = m_read_bytes[m_local_rank].load();
@@ -417,12 +422,12 @@ inline void wait_for_remote_progress(int dest, size_t reserve_start) {
         remaining_bytes = m_page_aligned_buffer_size - cur_index;
       }
 
-      // copy into the buffer, offet by partial reads, data is offset by the current index
+      // copy into the buffer, offset by partial reads, data is offset by the current index
       m_panic.push_bytes(m_data[m_local_rank] + cur_index, sizeof(std::byte) * remaining_bytes);
       read_bytes += remaining_bytes;
       // Update the partial read, in the non-circular buffer to reduce atomic calls the reader would
       // only update when the whole msg was read. However, other processes may be waiting to write
-      // into the region this is currenly consuming from.
+      // into the region this is currently consuming from.
       m_read_bytes[m_local_rank].fetch_add(remaining_bytes);
     }
     return available_to_read;
@@ -435,6 +440,15 @@ inline void wait_for_remote_progress(int dest, size_t reserve_start) {
    * @tparam shm_type 
    * @param filename 
    * @param size 
+   * @return shm_type* 
+   */
+  /**
+   * @brief Opens a shm region with a given filename and size then memory maps onto it. opens with
+   * the O_EXL tag. Safe for multiple processes to call on the same filename.
+   * 
+   * @tparam shm_type 
+   * @param filename C-string representing the name of the shared memory region.
+   * @param size in bytes of the shared memory region.
    * @return shm_type* 
    */
   template <typename shm_type> shm_type* open_new_shm_region(const char* filename, size_t size) {
