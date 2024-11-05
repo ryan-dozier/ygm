@@ -224,12 +224,12 @@ public:
    * @param msg container of outgoing msgs
    * @param msgsize size of the container
    */
-  void send(const int dest, std::byte* msg, const size_t msgsize) {
+  inline void send(const int dest, std::byte* msg, const size_t msgsize) {
     if (msgsize > 0 && dest < m_local_size) shm_send(dest, (const std::byte*) msg, msgsize);
   }
 
-  void send(const int dest, std::shared_ptr<ygm::detail::byte_vector>& buffer) {
-    send(dest, buffer.get()->data(), (const size_t) buffer.get()->size());
+  inline void send(const int dest, std::shared_ptr<ygm::detail::byte_vector>& buffer) {
+    send(dest, buffer->data(), (const size_t) buffer->size());
   }
 
   /**
@@ -240,7 +240,7 @@ public:
    * @param buffer_size size of the contiguous storage
    * @return size_t bytes actaully read into the buffer
    */
-  size_t receive(std::shared_ptr<ygm::detail::byte_vector>& buffer) {
+  inline size_t receive(std::shared_ptr<ygm::detail::byte_vector>& buffer) {
     size_t receive_amount = this->size();
     if(receive_amount > 0) {
       shm_receive(receive_amount - m_panic.size());
@@ -273,8 +273,8 @@ private:
    * @return The number of bytes in the shared memory buffer.
    */
   inline size_t shm_size() const {
-    size_t written_bytes = m_written_bytes[m_local_rank].load();
-    size_t read_bytes = m_read_bytes[m_local_rank].load();
+    const size_t written_bytes = m_written_bytes[m_local_rank].load();
+    const size_t read_bytes = m_read_bytes[m_local_rank].load();
     return written_bytes - read_bytes;
   }
 
@@ -336,11 +336,10 @@ private:
  * @param written_bytes The number of bytes written so far.
  * @param reserve_start The starting index of the reserved space.
  */
-void handle_consumer_overlap(const int dest, const std::byte* msg, size_t& cur_index, size_t& cur_msgsize, size_t& written_bytes, const size_t reserve_start) {
+inline void handle_consumer_overlap(const int dest, const std::byte* msg, size_t& cur_index, size_t& cur_msgsize, size_t& written_bytes, const size_t reserve_start) {
   for (size_t consumed_index = m_read_bytes[dest].load() % m_page_aligned_buffer_size;
       (cur_index < consumed_index) && ((cur_index + cur_msgsize) > consumed_index);
        consumed_index = m_read_bytes[dest].load() % m_page_aligned_buffer_size) {
-
 
     // Calculate the available bytes between the tail and the head
     int cur_avail = consumed_index - cur_index;
@@ -353,6 +352,8 @@ void handle_consumer_overlap(const int dest, const std::byte* msg, size_t& cur_i
       cur_index = (reserve_start + written_bytes) % m_page_aligned_buffer_size;
     } else {
       // Consume to alleviate deadlock if the buffer is more than 50% full
+      // TODO: Make a deadlock prone test case to see if this value should be tuneable, an idea for this 
+      // could be that each round of iteration we increase the % threshold to do a panic read.
       if (this->utilized() > 0.5) {
           shm_receive(m_panic_read_size);
       } else {
@@ -369,7 +370,7 @@ void handle_consumer_overlap(const int dest, const std::byte* msg, size_t& cur_i
  * @param dest The destination index in the shared memory region.
  * @param reserve_start The starting index of the reserved space.
  */
-void wait_for_remote_progress(int dest, size_t reserve_start) {
+inline void wait_for_remote_progress(int dest, size_t reserve_start) {
   while (m_written_bytes[dest].load() != reserve_start) {
     // Consume to alleviate deadlock if the buffer is more than 50% full
     if (this->utilized() > 0.5) {
@@ -413,7 +414,7 @@ void wait_for_remote_progress(int dest, size_t reserve_start) {
       // copy into the buffer, offet by partial reads, data is offset by the current index
       m_panic.push_bytes(m_data[m_local_rank] + cur_index, sizeof(std::byte) * remaining_bytes);
       read_bytes += remaining_bytes;
-      // update the partial read, in the non-circular buffer to reduce atomic calls the reader would
+      // Update the partial read, in the non-circular buffer to reduce atomic calls the reader would
       // only update when the whole msg was read. However, other processes may be waiting to write
       // into the region this is currenly consuming from.
       m_read_bytes[m_local_rank].fetch_add(remaining_bytes);
