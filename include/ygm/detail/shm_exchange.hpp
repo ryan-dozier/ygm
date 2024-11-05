@@ -176,6 +176,10 @@ public:
     if (msgsize > 0 && dest < m_local_size) shm_send(dest, msg, msgsize);
   }
 
+  void send(int dest, std::shared_ptr<ygm::detail::byte_vector>& buffer) {
+    send(dest, buffer.get()->data(), buffer.get()->size());
+  }
+
   /**
    * @brief Used by the consuming process. Reads up to buffersize bytes from the shared structure.
    * It returns the number of bytes that were actually read.
@@ -211,8 +215,16 @@ std::string to_string() const {
 
 
 private:
+  /**
+   * @brief Returns the size of the data in the shared memory buffer.
+   * 
+   * @return The number of bytes in the shared memory buffer.
+   */
   inline size_t shm_size() const {
-     return m_written_bytes[m_local_rank].load() - m_read_bytes[m_local_rank].load(); }
+    size_t written_bytes = m_written_bytes[m_local_rank].load();
+    size_t read_bytes = m_read_bytes[m_local_rank].load();
+    return written_bytes - read_bytes;
+  }
 
   // Write to the SHM region, see insert(int dest, std::byte* msg, size_t msgsize) above for the
   // full producer process.
@@ -283,45 +295,44 @@ private:
     m_written_bytes[dest].fetch_add(msgsize);
   }
 
-  /**
-   * @brief reads from the shm region, see read_bytes(void* buffer, size_t buffer_size) above for
-   * the public function interface
-   * 
-   * @param buffer 
-   * @param buffer_size 
-   * @return number of read bytes 
-   */
+/**
+ * @brief Reads from the shared memory (shm) region. This function is responsible for reading data
+ *        from the shared memory buffer
+ * 
+ * @param max_read The maximum number of bytes to read.
+ * @return The number of bytes actaully read.
+ */
   size_t shm_receive(size_t max_read) {
-    // grab the current head and tail. The tail.load() is our linearization point for reading. 
-    // the only process which updates the head is the rank owning the buffer.
+    // Get the current readbytes and writtenbytes pointers. The writtenbytes.load() is our linearization point for reading.
+    // The only process which updates the readbytes is the rank owning the buffer.
     size_t cur_tail = m_written_bytes[m_local_rank].load();
     size_t cur_head = m_read_bytes[m_local_rank].load();
-    size_t read_size = 0;
     size_t read_bytes = 0;
-    // do buffersize check
-    size_t read_amount = cur_tail - cur_head;
-    if (read_amount == 0) return 0;
-    if (read_amount > max_read) read_amount = max_read;
-    while (read_bytes != read_amount) {
-      //calculate current buffer, and index within
-      size_t cur_index = (cur_head + read_bytes) % m_page_aligned_buffer_size;
 
-      read_size = read_amount - read_bytes;
-      // check if the current read will extend past the end of the current buffer
-      if (cur_index + read_size > m_page_aligned_buffer_size) {
-        // modify the current read size to the end of this buffer
-        read_size = m_page_aligned_buffer_size - cur_index;
+    // Calculate the amount of data available to read
+    size_t available_to_read = cur_tail - cur_head;
+    if (available_to_read == 0) return 0;
+    if (available_to_read > max_read) available_to_read = max_read;
+
+    // Read data from the shared memory buffer
+    while (read_bytes < available_to_read) {
+      size_t cur_index = (cur_head + read_bytes) % m_page_aligned_buffer_size;
+      size_t remaining_bytes = available_to_read - read_bytes;
+
+      // Adjust read size if it extends past the end of the buffer
+      if (cur_index + remaining_bytes > m_page_aligned_buffer_size) {
+        remaining_bytes = m_page_aligned_buffer_size - cur_index;
       }
+
       // copy into the buffer, offet by partial reads, data is offset by the current index
-      //std::memcpy((std::byte*)buffer + read_bytes, m_data[m_local_rank] + cur_index, sizeof(std::byte) * read_size);
-      m_panic.push_bytes(m_data[m_local_rank] + cur_index, sizeof(std::byte) * read_size);
-      read_bytes += read_size;
+      m_panic.push_bytes(m_data[m_local_rank] + cur_index, sizeof(std::byte) * remaining_bytes);
+      read_bytes += remaining_bytes;
       // update the partial read, in the non-circular buffer to reduce atomic calls the reader would
       // only update when the whole msg was read. However, other processes may be waiting to write
       // into the region this is currenly consuming from.
-      m_read_bytes[m_local_rank].fetch_add(read_size);
+      m_read_bytes[m_local_rank].fetch_add(remaining_bytes);
     }
-    return read_amount;
+    return available_to_read;
   }
  
   /**
@@ -335,29 +346,45 @@ private:
    */
   template <typename shm_type> shm_type* open_new_shm_region(const char* filename, size_t size) {
     int file = shm_open(filename, O_CREAT | O_RDWR | O_EXCL, 0600);
+    if (file == -1 && errno != EEXIST) {
+      throw std::runtime_error(std::string("shm_open failed: ") + strerror(errno));
+    }
     // if we created the file, set the correct file size
-    if (file != -1) fallocate(file, 0, 0, size);
-    // if we failed to create the file, open the file for reading
-    while (file == -1) {
-      file = shm_open(filename, O_RDWR, 0600);
+    if (file != -1) {
+      if (fallocate(file, 0, 0, size) == -1) {
+        close(file);
+        throw std::runtime_error(std::string("fallocate failed: ") + strerror(errno));
+      }
+    } else {
+      // if we failed to create the file, open the file for reading
+      while (file == -1) {
+        file = shm_open(filename, O_RDWR, 0600);
+        if (file == -1 && errno != EEXIST) {
+          throw std::runtime_error(std::string("shm_open failed: ") + strerror(errno));
+        }
+      }
     }
 
     // wait for the file to be the correct size before memory mapping
     struct stat stat_buf;
     do {
-      fstat(file, &stat_buf);
-      m_bh.backoff();^
+      if (fstat(file, &stat_buf) == -1) {
+        close(file);
+        throw std::runtime_error(std::string("fstat failed: ") + strerror(errno));
+      }
+      m_bh.backoff();
     } while (stat_buf.st_size != size);
     m_bh.reset();
 
     // now that the shm_file is the correct size we can memory map to it.
     shm_type* shm_ptr = (shm_type*) mmap(NULL, size, PROT_READ | PROT_WRITE, MAP_SHARED, file, 0);
     if (shm_ptr == MAP_FAILED) {
-      throw std::runtime_error(std::string("mmap failed ") + strerror(errno) + std::string(" " + std::to_string(size)));
+      close(file);
+      throw std::runtime_error(std::string("mmap failed ") + strerror(errno));
     }
-    int msync_ret = msync(shm_ptr, size, MS_SYNC);
-    if (msync_ret != 0) {
-      std::cerr << "msync failed" << std::endl;
+
+    if (msync(shm_ptr, size, MS_SYNC) != 0) {
+      throw std::runtime_error("msync failed: " + strerror(errno));
     }
     // yes its safe to close a mapped file
     close(file);
