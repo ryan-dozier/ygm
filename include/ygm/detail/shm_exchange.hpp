@@ -195,7 +195,13 @@ public:
 
     munmap(m_reserved_bytes, m_page_aligned_counter_size);
     munmap(m_written_bytes, m_page_aligned_counter_size);
-    // todo barrier
+
+    // Ensure all processes reach this point before unlinking shared memory regions
+    int finalized;
+    MPI_Finalized(&finalized);
+    if(!finalized)
+      MPI_Barrier(MPI_COMM_WORLD);
+
     if (m_local_rank == 0) {
       shm_unlink(m_filenames.m_reserve_fname.c_str());
       shm_unlink(m_filenames.m_written_fname.c_str());
@@ -387,7 +393,7 @@ inline void wait_for_remote_progress(int dest, size_t reserve_start) {
  *        from the shared memory buffer
  * 
  * @param max_read The maximum number of bytes to read.
- * @return The number of bytes actaully read.
+ * @return The number of bytes actually read.
  */
   size_t shm_receive(size_t max_read) {
     // Get the current readbytes and writtenbytes pointers. The writtenbytes.load() is our linearization point for reading.
