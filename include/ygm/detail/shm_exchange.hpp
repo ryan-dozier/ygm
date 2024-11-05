@@ -224,12 +224,12 @@ public:
    * @param msg container of outgoing msgs
    * @param msgsize size of the container
    */
-  void send(int dest, std::byte* msg, size_t msgsize) {
-    if (msgsize > 0 && dest < m_local_size) shm_send(dest, msg, msgsize);
+  void send(const int dest, std::byte* msg, const size_t msgsize) {
+    if (msgsize > 0 && dest < m_local_size) shm_send(dest, (const std::byte*) msg, msgsize);
   }
 
-  void send(int dest, std::shared_ptr<ygm::detail::byte_vector>& buffer) {
-    send(dest, buffer.get()->data(), buffer.get()->size());
+  void send(const int dest, std::shared_ptr<ygm::detail::byte_vector>& buffer) {
+    send(dest, buffer.get()->data(), (const size_t) buffer.get()->size());
   }
 
   /**
@@ -278,14 +278,20 @@ private:
     return written_bytes - read_bytes;
   }
 
-  // Write to the SHM region, see insert(int dest, std::byte* msg, size_t msgsize) above for the
-  // full producer process.
-  void shm_send(int dest, std::byte* msg, size_t msgsize) {
-    // grab the current reserved index, and increment by the msgsize
+  /**
+   * @brief Writes data to the shared memory (shm) region.
+   * 
+   * @param dest The destination rank to send a shm msg to.
+   * @param msg Pointer to the message data to be written.
+   * @param msgsize The size of the message data in bytes.
+   */
+  void shm_send(const int dest, const std::byte* msg, const size_t msgsize) {
+    // Grab the current reserved index and increment by the msgsize
     size_t reserve_start = m_reserved_bytes[dest].fetch_add(msgsize);
     size_t written_bytes = 0;
+
     do {
-      // from the full index grab the buffer id, and the index within the current logical buffer
+      // From the full index grab the buffer id, and the index within the current logical buffer
       size_t cur_index = (reserve_start + written_bytes) % m_page_aligned_buffer_size;
 
       // in order to handle large msgs we may have to copy in several chunks
@@ -296,34 +302,8 @@ private:
         cur_msgsize = m_page_aligned_buffer_size - cur_index;
       } 
       
-      // when re-using buffers we have the chance to write over locations where the consuming rank
-      // has read to so far. for the moment we'll have to wait until the consumer makes enough
-      // progress to write to the buffer. we'll look into other methods to potentially improve this
-      // here we care the a write will cross where the consumer is currently working because it's a
-      // circular buffer the reader could be at index 0 and the writer could be at index 64 and it's
-      // safe to write. I believe this solves this by checking if consumed counter falls between the
-      // current written index, and the index + the partial write size.
-      for (size_t consumed_index = m_read_bytes[dest].load() % m_page_aligned_buffer_size;
-          (cur_index < consumed_index) && ((cur_index + cur_msgsize) > consumed_index); 
-           consumed_index = m_read_bytes[dest].load() % m_page_aligned_buffer_size) {
-
-        m_bh.backoff();
-        // calc the available bytes between the tail and the head
-        int cur_avail = consumed_index - cur_index; // TODO: work out if there are edge cases here
-        if (cur_avail > 0) { 
-          // copy data in the buffer up to the tail
-          std::memcpy(m_data[dest] + cur_index, msg + written_bytes, sizeof(std::byte) * cur_avail);
-          // update to reflect the partial write
-          written_bytes += cur_avail;
-          cur_msgsize -= cur_avail;
-          cur_index = (reserve_start + written_bytes) % m_page_aligned_buffer_size;
-        } else { // because we're unable to write (produce) we should consume to alleviate deadlock
-          if (this->utilized() > 0.5) {
-            shm_receive(m_panic_read_size);
-          }
-        }
-      }
-      m_bh.reset(); 
+      // Handle potential overlap with the consumer's read position
+      handle_consumer_overlap(dest, msg, cur_index, cur_msgsize, written_bytes, reserve_start);
 
       // copy the bytes that fit into data offset by calculated index
       std::memcpy(m_data[dest] + cur_index, msg + written_bytes, sizeof(std::byte) * cur_msgsize);
@@ -332,20 +312,74 @@ private:
     } while (written_bytes != msgsize);
     __sync_synchronize();
 
-    // currently the only process that can make progress is the next sequential msg
-    while (m_written_bytes[dest].load() != reserve_start) { 
-      // wait for backoff and loads to execute potentially clearing up the problem
-      m_bh.backoff();
-      // when serializing only panic if our buffer is 50% full
-      if (this->utilized() > 0.5) { 
-        shm_receive(m_panic_read_size);
-      }
-    }
-    m_bh.reset();
-  
+    // Ensure other process make progress before updating the written size
+    wait_for_remote_progress(dest, reserve_start);
     // increment the written size, the write becomes visable to other processes here
+
     m_written_bytes[dest].fetch_add(msgsize);
   }
+
+/**
+ * @brief Handles potential overlap with the consumer's read position.
+ * When re-using buffers, there is a chance that the write operation might overlap with locations
+ * that the consumer has already read. To prevent this, we need to wait until the consumer makes
+ * enough progress to allow writing to the buffer.
+ * 
+ * This function checks if the write operation would cross the consumer's current read position
+ * in the circular buffer. For example, the reader could be at index 0 while the writer is at index 64,
+ * and it would still be safe to write. This is handled by checking if the consumer's read position
+ * falls between the current write index and the index after the partial write.
+ *
+ * @param dest The destination index in the shared memory region.
+ * @param cur_index The current index in the buffer.
+ * @param cur_msgsize The current message size.
+ * @param written_bytes The number of bytes written so far.
+ * @param reserve_start The starting index of the reserved space.
+ */
+void handle_consumer_overlap(const int dest, const std::byte* msg, size_t& cur_index, size_t& cur_msgsize, size_t& written_bytes, const size_t reserve_start) {
+  for (size_t consumed_index = m_read_bytes[dest].load() % m_page_aligned_buffer_size;
+      (cur_index < consumed_index) && ((cur_index + cur_msgsize) > consumed_index);
+       consumed_index = m_read_bytes[dest].load() % m_page_aligned_buffer_size) {
+
+
+    // Calculate the available bytes between the tail and the head
+    int cur_avail = consumed_index - cur_index;
+    if (cur_avail > 0) {
+      // Copy data in the buffer up to the tail
+      std::memcpy(m_data[dest] + cur_index, msg + written_bytes, sizeof(std::byte) * cur_avail);
+      // Update to reflect the partial write
+      written_bytes += cur_avail;
+      cur_msgsize -= cur_avail;
+      cur_index = (reserve_start + written_bytes) % m_page_aligned_buffer_size;
+    } else {
+      // Consume to alleviate deadlock if the buffer is more than 50% full
+      if (this->utilized() > 0.5) {
+          shm_receive(m_panic_read_size);
+      } else {
+        m_bh.backoff();
+      }
+    }
+  }
+  m_bh.reset();
+}
+
+/**
+ * @brief Waits for remote messages to make progress.
+ * 
+ * @param dest The destination index in the shared memory region.
+ * @param reserve_start The starting index of the reserved space.
+ */
+void wait_for_remote_progress(int dest, size_t reserve_start) {
+  while (m_written_bytes[dest].load() != reserve_start) {
+    // Consume to alleviate deadlock if the buffer is more than 50% full
+    if (this->utilized() > 0.5) {
+      shm_receive(m_panic_read_size);
+    } else {
+      m_bh.backoff();
+    }
+  }
+  m_bh.reset();
+}
 
 /**
  * @brief Reads from the shared memory (shm) region. This function is responsible for reading data
