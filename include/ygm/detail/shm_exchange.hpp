@@ -82,6 +82,14 @@ struct backoff_helper {
  * @typedef std::byte, just a placeholder for std::byte, allowed for easier unit tests using char
  */
 class shm_exchange {
+private:
+  struct shm_filenames {
+    std::string m_data_fname;
+    std::string m_reserve_fname;
+    std::string m_written_fname;
+    std::string m_read_fname;
+  };
+
 public:
   static_assert(sizeof(std::byte) == 1, "shm_exchange requires byte sized type.\n");
   shm_exchange() : m_local_rank(-1), m_local_size(-1) {};
@@ -124,10 +132,10 @@ private:
    * @brief Initializes the filenames for shared memory regions and atomic counters.
    */
   void initialize_filenames() {
-    m_data_fname = "ygm_shm_exchange_";
-    m_reserve_fname = "ygm_shm_reserve";
-    m_written_fname = "ygm_shm_tail";
-    m_read_fname = "ygm_shm_head";
+    m_filenames.m_data_fname = "ygm_shm_exchange_";
+    m_filenames.m_reserve_fname = "ygm_shm_reserve";
+    m_filenames.m_written_fname = "ygm_shm_tail";
+    m_filenames.m_read_fname = "ygm_shm_head";
   }
 
   /**
@@ -150,13 +158,13 @@ private:
    * @brief Initializes the atomic counters for reserved, written, and read bytes.
    */
   inline void initialize_atomic_counters() {
-    m_reserved_bytes = open_new_shm_region<atomic_counters>(m_reserve_fname.c_str(), m_page_aligned_counter_size);
+    m_reserved_bytes = open_new_shm_region<atomic_counters>(m_filenames.m_reserve_fname.c_str(), m_page_aligned_counter_size);
     m_reserved_bytes[m_local_rank].store(0);
 
-    m_written_bytes = open_new_shm_region<atomic_counters>(m_written_fname.c_str(), m_page_aligned_counter_size);
+    m_written_bytes = open_new_shm_region<atomic_counters>(m_filenames.m_written_fname.c_str(), m_page_aligned_counter_size);
     m_written_bytes[m_local_rank].store(0);
 
-    m_read_bytes = open_new_shm_region<atomic_counters>(m_read_fname.c_str(), m_page_aligned_counter_size);
+    m_read_bytes = open_new_shm_region<atomic_counters>(m_filenames.m_read_fname.c_str(), m_page_aligned_counter_size);
     m_read_bytes[m_local_rank].store(0);
   }
 
@@ -164,7 +172,7 @@ private:
    * @brief Initializes the shared memory regions for the local rank.
    */
   inline void initialize_shared_memory_regions() {
-    std::string fname = m_data_fname + std::to_string(m_local_rank);
+    std::string fname = m_filenames.m_data_fname + std::to_string(m_local_rank);
     m_data[m_local_rank] = open_new_shm_region<std::byte>(fname.c_str(), m_page_aligned_buffer_size);
   }
 
@@ -174,7 +182,7 @@ private:
   inline void initialize_remote_shared_memory_regions() {
     for (int i = 0; i < m_local_size; i++) {
       if (i != m_local_rank) {
-        std::string fname = m_data_fname + std::to_string(i);
+        std::string fname = m_filenames.m_data_fname + std::to_string(i);
         m_data[i] = open_new_shm_region<std::byte>(fname.c_str(), m_page_aligned_buffer_size);
       }
     }
@@ -189,11 +197,11 @@ public:
     munmap(m_written_bytes, m_page_aligned_counter_size);
     // todo barrier
     if (m_local_rank == 0) {
-      shm_unlink(m_reserve_fname.c_str());
-      shm_unlink(m_written_fname.c_str());
-      shm_unlink(m_read_fname.c_str());
+      shm_unlink(m_filenames.m_reserve_fname.c_str());
+      shm_unlink(m_filenames.m_written_fname.c_str());
+      shm_unlink(m_filenames.m_read_fname.c_str());
     }
-    shm_unlink(std::string(m_data_fname + std::to_string(m_local_rank)).c_str());
+    shm_unlink(std::string(m_filenames.m_data_fname + std::to_string(m_local_rank)).c_str());
   }
 
   inline size_t size() const { return m_panic.size() + this->shm_size(); }
@@ -242,20 +250,20 @@ public:
     return receive_amount;
   }
 
-// Mostly for debugging purposes, but outputs the current status of the current rank's buffer.
-std::string to_string() const {
-  size_t head = m_read_bytes[m_local_rank].load();
-  size_t tail = m_written_bytes[m_local_rank].load();
+  // Mostly for debugging purposes, but outputs the current status of the current rank's buffer.
+  std::string to_string() const {
+    size_t head = m_read_bytes[m_local_rank].load();
+    size_t tail = m_written_bytes[m_local_rank].load();
 
-  std::string result  = std::string("SHM Buffer Info:");
-              result += std::string("\nrank:\t" + std::to_string(m_local_rank));
-              result += std::string("\nsize:\t" + std::to_string(size()));
-              result += std::string("\nutilize:\t" + std::to_string(utilized() * 100) + "%");
+    std::string result  = std::string("SHM Buffer Info:");
+                result += std::string("\nrank:\t" + std::to_string(m_local_rank));
+                result += std::string("\nsize:\t" + std::to_string(size()));
+                result += std::string("\nutilize:\t" + std::to_string(utilized() * 100) + "%");
 
-              result += std::string("\n\nPanic Buffer Info:");
-              result += std::string("\nsize:\t\t" + std::to_string(m_panic.size()));
-  return result;
-}
+                result += std::string("\n\nPanic Buffer Info:");
+                result += std::string("\nsize:\t\t" + std::to_string(m_panic.size()));
+    return result;
+  }
 
 
 private:
@@ -439,11 +447,8 @@ private:
   size_t                      m_page_aligned_buffer_size;
   size_t                      m_page_aligned_counter_size;
 
-  //filenames
-  std::string                 m_data_fname;
-  std::string                 m_reserve_fname;
-  std::string                 m_written_fname;
-  std::string                 m_read_fname;
+  // File names
+  shm_filenames               m_filenames;
 
   // these need to be shared, consider if renaming these could increase readability
   atomic_counters*            m_reserved_bytes;         // reserves space in shm
