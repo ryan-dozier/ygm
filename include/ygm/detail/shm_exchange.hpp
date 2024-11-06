@@ -104,7 +104,7 @@ public:
     initialize_filenames();
     initialize_page_aligned_sizes(shm_size);
     initialize_atomic_counters();
-    initialize_shared_memory_regions();
+    initialize_shared_memory_region();
 
     // Ensure each shm region is created and populated by the rank which will be reading from it
     MPI_Barrier(MPI_COMM_WORLD);
@@ -116,7 +116,7 @@ public:
     initialize_filenames();
     initialize_page_aligned_sizes(shm_size);
     initialize_atomic_counters();
-    initialize_shared_memory_regions();
+    initialize_shared_memory_region();
 
     // Ensure each shm region is created and populated by the rank which will be reading from it
     MPI_Barrier(MPI_COMM_WORLD);
@@ -169,9 +169,9 @@ private:
   }
 
   /**
-   * @brief Initializes the shared memory regions for the local rank.
+   * @brief Initializes the shared memory region for the local rank.
    */
-  inline void initialize_shared_memory_regions() {
+  inline void initialize_shared_memory_region() {
     std::string fname = get_rank_filename((const int) m_local_rank);
     m_data[m_local_rank] = open_new_shm_region<std::byte>(fname.c_str(), m_page_aligned_buffer_size);
   }
@@ -203,15 +203,14 @@ public:
     // Ensure all processes reach this point before unlinking shared memory regions
     int finalized;
     MPI_Finalized(&finalized);
-    if(!finalized)
-      MPI_Barrier(MPI_COMM_WORLD);
+    if(!finalized) MPI_Barrier(MPI_COMM_WORLD);
 
     if (m_local_rank == 0) {
       shm_unlink(m_filenames.m_reserve_fname.c_str());
       shm_unlink(m_filenames.m_written_fname.c_str());
       shm_unlink(m_filenames.m_read_fname.c_str());
     }
-    shm_unlink(std::string(get_rank_filename((const int) m_local_rank)).c_str());
+    shm_unlink(get_rank_filename(m_local_rank).c_str());
   }
 
   inline size_t size() const { return m_panic.size() + this->shm_size(); }
@@ -235,7 +234,7 @@ public:
    * @param msgsize size of the container
    */
   inline void send(const int dest, std::byte* msg, const size_t msgsize) {
-    if (msgsize > 0 && 0 <= dest < m_local_size) shm_send(dest, (const std::byte*) msg, msgsize);
+    if (msgsize > 0 && dest >= 0 && dest < m_local_size) shm_send(dest, (const std::byte*) msg, msgsize);
   }
 
   inline void send(const int dest, std::shared_ptr<ygm::detail::byte_vector>& buffer) {
@@ -307,7 +306,7 @@ private:
       // in order to handle large msgs we may have to copy in several chunks
       size_t cur_msgsize = msgsize - written_bytes;
 
-      // check if the current msg will fit within the buffer
+      // Check if the current msg will fit within the buffer
       if (cur_index + cur_msgsize > m_page_aligned_buffer_size) {
         cur_msgsize = m_page_aligned_buffer_size - cur_index;
       } 
@@ -347,6 +346,11 @@ private:
  * @param reserve_start The starting index of the reserved space.
  */
 inline void handle_consumer_overlap(const int dest, const std::byte* msg, size_t& cur_index, size_t& cur_msgsize, size_t& written_bytes, const size_t reserve_start) {
+  // Check if the consumer's read position falls between the current write index and index of the pending next write.
+  // If it does, we need to wait for the consumer to make progress before writing to the buffer.
+  // This is done to prevent the writer from overwriting data that the consumer has not yet read.
+  // In the mean time, we can copy data from our current read buffer into the panic buffer to not only
+  // prevent deadlock, but make some progress while waiting for other processes.
   for (size_t consumed_index = m_read_bytes[dest].load() % m_page_aligned_buffer_size;
       (cur_index < consumed_index) && ((cur_index + cur_msgsize) > consumed_index);
        consumed_index = m_read_bytes[dest].load() % m_page_aligned_buffer_size) {
