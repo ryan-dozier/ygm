@@ -544,7 +544,7 @@ inline void comm::flush_send_buffer(int dest) {
       m_free_send_buffers.pop_back();
     }
     request.buffer->swap(m_vec_send_buffers[dest]);
-    if (m_layout.is_local(dest) && request.buffer->size() <= config.shm_buffer_size / 2) {
+    if (m_layout.is_local(dest) && request.buffer->size() <= (config.shm_buffer_size / 2)) {
       m_shm_exchange.send(m_layout.local_id(dest), request.buffer->data(), request.buffer->size());
       m_send_buffer_bytes -= request.buffer->size();
       stats.shm_send(m_layout.local_id(dest), request.buffer->size());

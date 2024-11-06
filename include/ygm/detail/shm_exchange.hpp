@@ -210,7 +210,9 @@ public:
       shm_unlink(m_filenames.m_written_fname.c_str());
       shm_unlink(m_filenames.m_read_fname.c_str());
     }
-    shm_unlink(get_rank_filename(m_local_rank).c_str());
+    shm_unlink(std::string(get_rank_filename((const int) m_local_rank)).c_str());
+    if(!finalized)
+      MPI_Barrier(MPI_COMM_WORLD);
   }
 
   inline size_t size() const { return m_panic.size() + this->shm_size(); }
