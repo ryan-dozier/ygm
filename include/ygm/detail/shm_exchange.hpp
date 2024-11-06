@@ -439,15 +439,6 @@ inline void wait_for_remote_progress(int dest, size_t reserve_start) {
  
   /**
    * @brief Opens a shm region with a given filename and size then memory maps onto it. opens with
-   * the O_EXL tag. Safe for mutliple processes to call on the same filename.
-   * 
-   * @tparam shm_type 
-   * @param filename 
-   * @param size 
-   * @return shm_type* 
-   */
-  /**
-   * @brief Opens a shm region with a given filename and size then memory maps onto it. opens with
    * the O_EXL tag. Safe for multiple processes to call on the same filename.
    * 
    * @tparam shm_type 
@@ -494,7 +485,9 @@ inline void wait_for_remote_progress(int dest, size_t reserve_start) {
       throw std::runtime_error(std::string("mmap failed ") + strerror(errno));
     }
 
-    if (msync(shm_ptr, size, MS_SYNC) != 0) {
+    if (msync(shm_ptr, size, MS_SYNC) == -1) {
+      munmap(shm_ptr, size);
+      close(file);
       throw std::runtime_error(std::string("msync failed: ") + strerror(errno));
     }
     // yes its safe to close a mapped file
