@@ -106,7 +106,8 @@ class comm_environment {
   size_t num_isends_wait = 4;
   size_t freq_issend     = 8;
 
-  size_t shm_buffer_size = 16 * 1024 * 1024; 
+  size_t shm_buffer_size = 16 * 1024 * 1024;
+  size_t shm_max_msg_size = shm_buffer_size / 2;
   size_t shm_panic_read_size = 1024;
 
   routing_type routing = routing_type::NONE;

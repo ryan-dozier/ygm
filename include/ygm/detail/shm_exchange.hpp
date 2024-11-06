@@ -255,6 +255,7 @@ public:
     size_t receive_amount = this->size();
     if(receive_amount > 0) {
       shm_receive(receive_amount - m_panic.size());
+      YGM_ASSERT_RELEASE(m_panic.size() == receive_amount);
       buffer->swap(m_panic);
       m_panic.clear();
     }
