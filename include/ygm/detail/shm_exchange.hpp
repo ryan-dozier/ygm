@@ -10,6 +10,7 @@
 #include <iostream>
 #include <memory>
 #include <string>
+#include <sys/shm.h>
 #include <sys/mman.h>
 #include <sys/stat.h>
 #include <sys/types.h>
@@ -158,6 +159,10 @@ private:
    * @brief Initializes the atomic counters for reserved, written, and read bytes.
    */
   inline void initialize_atomic_counters() {
+    shm_unlink(m_filenames.m_reserve_fname.c_str());
+    shm_unlink(m_filenames.m_written_fname.c_str());
+    shm_unlink(m_filenames.m_read_fname.c_str());
+    MPI_Barrier(MPI_COMM_WORLD);
     m_reserved_bytes = open_new_shm_region<atomic_counters>(m_filenames.m_reserve_fname.c_str(), m_page_aligned_counter_size);
     m_reserved_bytes[m_local_rank].store(0);
 
@@ -173,6 +178,7 @@ private:
    */
   inline void initialize_shared_memory_region() {
     std::string fname = get_rank_filename((const int) m_local_rank);
+    shm_unlink(fname.c_str());
     m_data[m_local_rank] = open_new_shm_region<std::byte>(fname.c_str(), m_page_aligned_buffer_size);
   }
 
