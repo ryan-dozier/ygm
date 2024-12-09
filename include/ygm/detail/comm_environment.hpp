@@ -60,6 +60,9 @@ class comm_environment {
     if (const char* cc = std::getenv("YGM_COMM_ISSEND_FREQ")) {
       freq_issend = convert<size_t>(cc);
     }
+    if (const char* cc = std::getenv("YGM_COMM_SEND_BUFFER_FREE_LIST_LEN")) {
+      send_buffer_free_list_len = convert<size_t>(cc);
+    }
     if (const char* cc = std::getenv("YGM_COMM_ROUTING")) {
       if (std::string(cc) == "NONE") {
         routing = routing_type::NONE;
@@ -103,8 +106,9 @@ class comm_environment {
   size_t irecv_size = 1024 * 1024 * 1024;
   size_t num_irecvs = 8;
 
-  size_t num_isends_wait = 4;
-  size_t freq_issend     = 8;
+  size_t num_isends_wait           = 4;
+  size_t freq_issend               = 8;
+  size_t send_buffer_free_list_len = 32;
 
   size_t shm_buffer_size = 16 * 1024 * 1024;
   size_t shm_max_msg_size = shm_buffer_size / 2;
