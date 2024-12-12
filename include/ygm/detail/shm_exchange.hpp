@@ -103,7 +103,7 @@ public:
   shm_exchange(const ygm::detail::layout& layout, const size_t shm_size, const size_t panic_size, const size_t panic_read_size) :
                            m_local_rank(layout.local_id()), m_local_size(layout.local_size()), m_panic(panic_size), m_panic_read_size(panic_read_size) {
     initialize_filenames();
-    initialize_page_aligned_sizes(shm_size);
+    initialize_page_aligned_sizes(shm_size / m_local_size);
     initialize_atomic_counters();
     initialize_shared_memory_region();
 
@@ -115,7 +115,7 @@ public:
   shm_exchange(const size_t local_id, const size_t local_size, const size_t shm_size, const size_t panic_size, const size_t panic_read_size) :
                            m_local_rank(local_id), m_local_size(local_size), m_panic(panic_size), m_panic_read_size(panic_read_size) {
     initialize_filenames();
-    initialize_page_aligned_sizes(shm_size);
+    initialize_page_aligned_sizes(shm_size / m_local_size);
     initialize_atomic_counters();
     initialize_shared_memory_region();
 
@@ -125,7 +125,7 @@ public:
   }
 
   /**
-   * @brief This private block contains helpoer functions for the constructor to initialize the shm exchange
+   * @brief This private block contains helper functions for the constructor to initialize the shm exchange
    * they should not be called outside of the constructor.
    */
 private:
