@@ -545,7 +545,7 @@ inline void comm::flush_send_buffer(int dest) {
       m_free_send_buffers.pop_back();
     }
     request.buffer->swap(m_vec_send_buffers[dest]);
-    if (m_layout.is_local(dest) && request.buffer->size() < config.shm_max_msg_size) {
+    if (m_layout.is_local(dest) && request.buffer->size() < shm::max_msg_size) {
       m_shm_exchange.send(m_layout.local_id(dest), request.buffer->data(), request.buffer->size());
       m_send_buffer_bytes -= request.buffer->size();
       stats.shm_send(m_layout.local_id(dest), request.buffer->size());
@@ -1061,10 +1061,9 @@ inline bool comm::local_process_incoming() {
       done_something = true;
     }
 
-    size_t shm_bytes = m_shm_exchange.size();
+    size_t shm_bytes = m_shm_exchange.receive(m_shm_read);
     if (shm_bytes > 0) {
       received_to_return           = true;
-      shm_bytes = m_shm_exchange.receive(m_shm_read);
       stats.shm_receive(m_layout.local_id(rank()), shm_bytes);
       handle_next_shm_receive(m_shm_read, shm_bytes);
       done_something = true;

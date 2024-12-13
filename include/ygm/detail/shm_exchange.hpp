@@ -24,7 +24,7 @@
 namespace shm {
 #define MAX_RANKS 256
 #define CACHELINE 64
-
+static size_t max_msg_size;
 
 /** 
  *  @brief 
@@ -92,6 +92,8 @@ private:
   };
 
 public:
+
+
   static_assert(sizeof(std::byte) == 1, "shm_exchange requires byte sized type.\n");
   shm_exchange() : m_local_rank(-1), m_local_size(-1) {};
 
@@ -110,6 +112,7 @@ public:
     // Ensure each shm region is created and populated by the rank which will be reading from it
     MPI_Barrier(MPI_COMM_WORLD);
     initialize_remote_shared_memory_regions();
+    MPI_Barrier(MPI_COMM_WORLD);
   }
 
   shm_exchange(const size_t local_id, const size_t local_size, const size_t shm_size, const size_t panic_size, const size_t panic_read_size) :
@@ -122,6 +125,7 @@ public:
     // Ensure each shm region is created and populated by the rank which will be reading from it
     MPI_Barrier(MPI_COMM_WORLD);
     initialize_remote_shared_memory_regions();
+    MPI_Barrier(MPI_COMM_WORLD);
   }
 
   /**
@@ -153,6 +157,8 @@ private:
     // Calculate the page-aligned size for the atomic counter arrays
     auto countersize = sizeof(atomic_counters) * MAX_RANKS;
     m_page_aligned_counter_size = ((countersize + pagesize - 1) / pagesize) * pagesize;
+    max_msg_size = m_page_aligned_buffer_size / 2;
+
   }
 
   /**
