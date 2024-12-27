@@ -248,7 +248,11 @@ public:
    * @param msgsize size of the container
    */
   inline void send(const int dest, std::byte* msg, const size_t msgsize) {
-    if (msgsize > 0 && dest >= 0 && dest < m_local_size) shm_send(dest, (const std::byte*) msg, msgsize);
+    if (msgsize <= 0)
+      throw std::runtime_error("SHM Buffer: Invalid msgsize detected. Size: " + std::to_string(msgsize));
+    if(dest < 0 || dest >= m_local_size)
+      throw std::runtime_error("SHM Buffer: Invalid destination detected. Dest: " + std::to_string(dest));
+    shm_send(dest, (const std::byte*) msg, msgsize);
   }
 
   inline void send(const int dest, std::shared_ptr<ygm::detail::byte_vector>& buffer) {
@@ -267,10 +271,10 @@ public:
     size_t receive_amount = this->size();
     if(receive_amount > 0) {
       shm_receive(receive_amount - m_panic.size());
-      YGM_ASSERT_RELEASE(m_panic.size() == receive_amount);
       buffer->swap(m_panic);
       m_panic.clear();
     }
+    YGM_ASSERT_RELEASE(buffer->size() == receive_amount);
     return receive_amount;
   }
 
