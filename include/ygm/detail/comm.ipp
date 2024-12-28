@@ -107,6 +107,7 @@ inline void comm::welcome(std::ostream &os) {
 inline void comm::stats_reset() { stats.reset(); }
 inline void comm::stats_print(const std::string &name, std::ostream &os) {
   std::stringstream sstr;
+  shm::shm_stats shm = m_shm_exchange.get_stats();
   sstr << "============== STATS =================\n"
        << "NAME                     = " << name << "\n"
        << "TIME                     = " << stats.get_elapsed_time() << "\n"
@@ -121,7 +122,11 @@ inline void comm::stats_print(const std::string &name, std::ostream &os) {
        << "MAX_WAITSOME_IALLREDUCE  = "
        << all_reduce_max(stats.get_waitsome_iallreduce_time()) << "\n"
        << "COUNT_IALLREDUCE         = " << stats.get_iallreduce_count() << "\n"
-       << m_shm_exchange.stats_print(this) << "\n"
+       << "SHM_SENDS                = " << all_reduce_sum(shm.m_send) << "\n"
+       << "SHM_SEND_BYTES           = " << all_reduce_sum(shm.m_send_bytes) << "\n"
+       << "SHM_RECV                 = " << all_reduce_sum(shm.m_recv) << "\n"
+       << "SHM_RECV_BYTES           = " << all_reduce_sum(shm.m_recv_bytes) << "\n"
+       << "SHM_PANICS               = " << all_reduce_sum(shm.m_panic_used) << "\n"
        << "======================================";
 
   if (rank0()) {

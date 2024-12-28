@@ -296,16 +296,6 @@ public:
   }
 
   inline shm_stats get_stats() const { return m_stats; }
-  inline std::string stats_print(const ygm::comm* comm) const {
-    std::stringstream sstr;
-    sstr << "SHM_SENDS                = " << comm->all_reduce_sum(m_stats.m_send) << "\n"
-         << "SHM_SEND_BYTES           = " << comm->all_reduce_sum(m_stats.m_send_bytes) << "\n"
-         << "SHM_RECV                 = " << comm->all_reduce_sum(m_stats.m_recv) << "\n"
-         << "SHM_RECV_BYTES           = " << comm->all_reduce_sum(m_stats.m_recv_bytes) << "\n"
-         << "SHM_PANICS               = " << comm->all_reduce_sum(m_stats.m_panic_used);
-    return sstr.str();
-  }
-
 
 private:
   /**
