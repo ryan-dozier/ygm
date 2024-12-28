@@ -43,6 +43,19 @@ private:
   alignas(CACHELINE) std::atomic<size_t> cnt;
 };
 
+struct shm_stats {
+  shm_stats() : m_send(0), m_recv(0), m_send_bytes(0), m_recv_bytes(0), m_panic_used(0) {}
+  void send_bytes(const size_t bytes) { m_send_bytes += bytes; m_send++; }
+  void recv_bytes(const size_t bytes) { m_recv_bytes += bytes; m_recv++; }
+  void panic() { m_panic_used++; }
+
+  size_t m_send;
+  size_t m_recv;
+  size_t m_send_bytes;
+  size_t m_recv_bytes;
+  size_t m_panic_used;
+};
+
 /**
  * @brief 
  * What it aims to do is reduce contention and busy waiting on atomics by having the process wait
@@ -103,7 +116,7 @@ public:
   shm_exchange& operator=(const shm_exchange& rhs) = default;
 
   shm_exchange(const ygm::detail::layout& layout, const size_t shm_size, const size_t panic_size, const size_t panic_read_size) :
-                           m_local_rank(layout.local_id()), m_local_size(layout.local_size()), m_panic(panic_size), m_panic_read_size(panic_read_size) {
+                           m_local_rank(layout.local_id()), m_local_size(layout.local_size()), m_panic(panic_size), m_panic_read_size(panic_read_size), m_stats() {
     initialize_filenames();
     initialize_page_aligned_sizes(shm_size / m_local_size);
     initialize_atomic_counters();
@@ -116,7 +129,7 @@ public:
   }
 
   shm_exchange(const size_t local_id, const size_t local_size, const size_t shm_size, const size_t panic_size, const size_t panic_read_size) :
-                           m_local_rank(local_id), m_local_size(local_size), m_panic(panic_size), m_panic_read_size(panic_read_size) {
+                           m_local_rank(local_id), m_local_size(local_size), m_panic(panic_size), m_panic_read_size(panic_read_size), m_stats() {
     initialize_filenames();
     initialize_page_aligned_sizes(shm_size / m_local_size);
     initialize_atomic_counters();
@@ -248,11 +261,13 @@ public:
    * @param msgsize size of the container
    */
   inline void send(const int dest, std::byte* msg, const size_t msgsize) {
-    if (msgsize <= 0)
+    if (msgsize < 0)
       throw std::runtime_error("SHM Buffer: Invalid msgsize detected. Size: " + std::to_string(msgsize));
     if(dest < 0 || dest >= m_local_size)
       throw std::runtime_error("SHM Buffer: Invalid destination detected. Dest: " + std::to_string(dest));
+    if (msgsize == 0) return;
     shm_send(dest, (const std::byte*) msg, msgsize);
+    m_stats.send_bytes(msgsize);
   }
 
   inline void send(const int dest, std::shared_ptr<ygm::detail::byte_vector>& buffer) {
@@ -273,24 +288,22 @@ public:
       shm_receive(receive_amount - m_panic.size());
       buffer->swap(m_panic);
       m_panic.clear();
+      YGM_ASSERT_RELEASE(m_panic.size() == 0);
+      YGM_ASSERT_RELEASE(buffer->size() == receive_amount);
+      m_stats.recv_bytes(receive_amount);
     }
-    YGM_ASSERT_RELEASE(buffer->size() == receive_amount);
     return receive_amount;
   }
 
-  // Mostly for debugging purposes, but outputs the current status of the current rank's buffer.
-  std::string to_string() const {
-    size_t head = m_read_bytes[m_local_rank].load();
-    size_t tail = m_written_bytes[m_local_rank].load();
-
-    std::string result  = std::string("SHM Buffer Info:");
-                result += std::string("\nrank:\t" + std::to_string(m_local_rank));
-                result += std::string("\nsize:\t" + std::to_string(size()));
-                result += std::string("\nutilize:\t" + std::to_string(utilized() * 100) + "%");
-
-                result += std::string("\n\nPanic Buffer Info:");
-                result += std::string("\nsize:\t\t" + std::to_string(m_panic.size()));
-    return result;
+  inline shm_stats get_stats() const { return m_stats; }
+  inline std::string stats_print() {
+    std::stringstream sstr;
+    sstr << "SHM Sends                = " << m_stats.m_send << "\n"
+         << "SHM Send Bytes           = " << m_stats.m_send_bytes << "\n"
+         << "SHM Recv                 = " << m_stats.m_recv << "\n"
+         << "SHM Recv Bytes           = " << m_stats.m_recv_bytes << "\n"
+         << "SHM Panic Used           = " << m_stats.m_panic_used << "\n";
+    return sstr.str();
   }
 
 
@@ -389,6 +402,7 @@ inline void handle_consumer_overlap(const int dest, const std::byte* msg, size_t
       // could be that each round of iteration we increase the % threshold to do a panic read.
       if (this->utilized() > 0.5) {
           shm_receive(m_panic_read_size);
+          m_stats.panic();
       } else {
         m_bh.backoff();
       }
@@ -408,6 +422,7 @@ inline void wait_for_remote_progress(int dest, size_t reserve_start) {
     // Consume to alleviate deadlock if the buffer is more than 50% full
     if (this->utilized() > 0.5) {
       shm_receive(m_panic_read_size);
+      m_stats.panic();
     } else {
       m_bh.backoff();
     }
@@ -536,6 +551,7 @@ inline void wait_for_remote_progress(int dest, size_t reserve_start) {
   size_t                      m_panic_read_size;
   // backoff function, need to run tests with and without it.
   backoff_helper              m_bh;
+  shm_stats                   m_stats;
 };
 };
 #endif

@@ -121,6 +121,7 @@ inline void comm::stats_print(const std::string &name, std::ostream &os) {
        << "MAX_WAITSOME_IALLREDUCE  = "
        << all_reduce_max(stats.get_waitsome_iallreduce_time()) << "\n"
        << "COUNT_IALLREDUCE         = " << stats.get_iallreduce_count() << "\n"
+       << m_shm_exchange.stats_print() << "\n"
        << "======================================";
 
   if (rank0()) {
