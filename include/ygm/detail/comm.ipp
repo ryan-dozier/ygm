@@ -563,11 +563,11 @@ inline void comm::flush_send_buffer(int dest) {
       m_free_send_buffers.pop_back();
     }
     request.buffer->swap(m_vec_send_buffers[dest]);
+    size_t buffer_size = request.buffer->size();
     // Use shared memory
     if (m_shm_exchange.can_use_shm(dest, request.buffer->size())) {     
       m_shm_exchange.send(m_layout.local_id(dest), request.buffer->data(), request.buffer->size());
       stats.shm_send(m_layout.local_id(dest), request.buffer->size());
-      m_send_local_buffer_bytes -= request.buffer->size();
       request.buffer->clear();
       m_free_send_buffers.push_back(request.buffer);
     // Use MPI
@@ -584,18 +584,23 @@ inline void comm::flush_send_buffer(int dest) {
       stats.isend(dest, request.buffer->size());
       m_pending_isend_bytes += request.buffer->size();
       m_send_queue.push_back(request);
-      
-      // Update send buffer bytes, we have to check if local in the MPI section because if the
-      // message too large for the shm_exchange it defaults to MPI
-      if (m_layout.is_local(dest)) 
-        m_send_local_buffer_bytes -= request.buffer->size();
-      else
-        m_send_remote_buffer_bytes -= request.buffer->size();
     }
+    // Update send buffer bytes, we have to check if local in the MPI section because if the
+    // message too large for the shm_exchange it defaults to MPI
+    if (m_layout.is_local(dest)) 
+      m_send_local_buffer_bytes -= buffer_size;
+    else
+      m_send_remote_buffer_bytes -= buffer_size;
     if (!m_in_process_receive_queue) {
       process_receive_queue();
     }
   }
+}
+
+inline void comm::queue_next_send(std::deque<int>& queue) {
+  int dest = queue.front();
+  queue.pop_front();
+  flush_send_buffer(dest);
 }
 
 /**
@@ -643,16 +648,10 @@ inline void comm::local_progress() {
   if (not m_in_process_receive_queue) {
     process_receive_queue();
   }
-  if (not m_send_local_dest_queue.empty()) {
-    int dest = m_send_local_dest_queue.front();
-    m_send_local_dest_queue.pop_front();
-    flush_send_buffer(dest);
-  }
-  if (not m_send_remote_dest_queue.empty()) {
-    int dest = m_send_remote_dest_queue.front();
-    m_send_remote_dest_queue.pop_front();
-    flush_send_buffer(dest);
-  }
+  if (not m_send_local_dest_queue.empty())
+    queue_next_send(m_send_local_dest_queue);
+  if (not m_send_remote_dest_queue.empty())
+    queue_next_send(m_send_remote_dest_queue);
 }
 
 /**
@@ -690,16 +689,12 @@ inline void comm::flush_all_local_and_process_incoming() {
     //  Flush each send buffer
     while (!m_send_local_dest_queue.empty()) {
       did_something = true;
-      int dest      = m_send_local_dest_queue.front();
-      m_send_local_dest_queue.pop_front();
-      flush_send_buffer(dest);
+      queue_next_send(m_send_local_dest_queue);
       process_receive_queue();
     }
     while (!m_send_remote_dest_queue.empty()) {
       did_something = true;
-      int dest      = m_send_remote_dest_queue.front();
-      m_send_remote_dest_queue.pop_front();
-      flush_send_buffer(dest);
+      queue_next_send(m_send_remote_dest_queue);
       process_receive_queue();
     }
 
@@ -718,16 +713,12 @@ inline void comm::flush_all_local_and_process_incoming() {
 inline void comm::flush_to_capacity() {
   while (m_send_local_buffer_bytes > config.local_buffer_size) {
     YGM_ASSERT_DEBUG(!m_send_local_dest_queue.empty());
-    int dest = m_send_local_dest_queue.front();
-    m_send_local_dest_queue.pop_front();
-    flush_send_buffer(dest);
+    queue_next_send(m_send_local_dest_queue);
   }
 
   while (m_send_remote_buffer_bytes > config.remote_buffer_size) {
     YGM_ASSERT_DEBUG(!m_send_remote_dest_queue.empty());
-    int dest = m_send_remote_dest_queue.front();
-    m_send_remote_dest_queue.pop_front();
-    flush_send_buffer(dest);
+    queue_next_send(m_send_remote_dest_queue);
   }
 }
 

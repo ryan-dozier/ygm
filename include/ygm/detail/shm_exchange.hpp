@@ -431,8 +431,8 @@ inline void wait_for_remote_progress(int dest, size_t reserve_start) {
     // Get the current readbytes and writtenbytes pointers.
     // The writtenbytes.load() is our linearization point for reading.
     // The only process which updates the readbytes is the rank owning the buffer.
-    size_t cur_tail = m_written_bytes[m_local_rank].load();
-    size_t cur_head = m_read_bytes[m_local_rank].load();
+    size_t cur_tail = m_written_bytes[m_local_rank].load(std::memory_order_relaxed);
+    size_t cur_head = m_read_bytes[m_local_rank].load(std::memory_order_relaxed);
     size_t read_bytes = 0;
 
     // Calculate the amount of data available to read

@@ -192,6 +192,8 @@ class comm {
 
   void flush_send_buffer(int dest);
 
+  void queue_next_send(std::deque<int>& queue);
+
   void handle_completed_send(mpi_isend_request &req_buffer);
 
   void check_completed_sends();
