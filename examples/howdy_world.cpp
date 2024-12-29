@@ -21,5 +21,7 @@ int main(int argc, char** argv) {
                   std::string("Can you hear me now?"));
     }
   }
+  world.welcome();
+  world.stats_print();
   return 0;
 }
