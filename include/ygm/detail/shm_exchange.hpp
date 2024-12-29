@@ -108,7 +108,7 @@ public:
 
   shm_exchange(const ygm::detail::layout& layout, const detail::comm_environment& env, detail::comm_stats& stats) : 
                             m_local_rank(layout.local_id()), m_local_size(layout.local_size()), m_max_read_size(env.shm_max_buffer_read), 
-                            m_panic(env.buffer_size), m_panic_read_size(env.shm_panic_read_size), m_layout(layout), m_stats(stats) {
+                            m_panic(env.local_buffer_size), m_panic_read_size(env.shm_panic_read_size), m_layout(layout), m_stats(stats) {
     build_shm_exchange(env.shm_buffer_size);
   }
 
@@ -162,7 +162,7 @@ private:
     auto countersize = sizeof(atomic_counters) * MAX_RANKS;
     m_page_aligned_counter_size = ((countersize + pagesize - 1) / pagesize) * pagesize;
     max_msg_size = m_page_aligned_buffer_size / 2;
-    if(m_max_read_size < 0 || m_max_read_size > shm_size) m_max_read_size = m_page_aligned_buffer_size;
+    if (m_max_read_size < 0 || m_max_read_size > shm_size) m_max_read_size = m_page_aligned_buffer_size;
   }
 
   /**
@@ -219,7 +219,7 @@ public:
     // Ensure all processes reach this point before unlinking shared memory regions
     int finalized;
     MPI_Finalized(&finalized);
-    if(!finalized) MPI_Barrier(MPI_COMM_WORLD);
+    if (!finalized) MPI_Barrier(MPI_COMM_WORLD);
 
     if (m_local_rank == 0) {
       shm_unlink(m_filenames.m_reserve_fname.c_str());
@@ -227,7 +227,7 @@ public:
       shm_unlink(m_filenames.m_read_fname.c_str());
     }
     shm_unlink(std::string(get_rank_filename((const int) m_local_rank)).c_str());
-    if(!finalized)
+    if (!finalized)
       MPI_Barrier(MPI_COMM_WORLD);
   }
 
@@ -265,7 +265,7 @@ public:
   inline void send(const int dest, std::byte* msg, const size_t msgsize) {
     if (msgsize < 0)
       throw std::runtime_error("SHM Buffer: Invalid msgsize detected. Size: " + std::to_string(msgsize));
-    if(dest < 0 || dest >= m_local_size)
+    if (dest < 0 || dest >= m_local_size)
       throw std::runtime_error("SHM Buffer: Invalid destination detected. Dest: " + std::to_string(dest));
     if (msgsize == 0) return;
     shm_send(dest, (const std::byte*) msg, msgsize);
@@ -286,7 +286,7 @@ public:
    */
   inline size_t receive(std::shared_ptr<ygm::detail::byte_vector>& buffer) {
     size_t receive_amount = this->size();
-    if(receive_amount > 0) {
+    if (receive_amount > 0) {
       shm_receive(receive_amount - m_panic.size());
       buffer->swap(m_panic);
       m_panic.clear();
@@ -450,7 +450,7 @@ inline void wait_for_remote_progress(int dest, size_t reserve_start) {
         remaining_bytes = m_page_aligned_buffer_size - cur_index;
       }
 
-      while(remaining_bytes > 0) {
+      while (remaining_bytes > 0) {
         size_t cur_read = std::min(remaining_bytes, m_max_read_size);
         // copy into the buffer, offset by partial reads, data is offset by the current index
         m_panic.push_bytes(m_data[m_local_rank] + cur_index, sizeof(std::byte) * cur_read);

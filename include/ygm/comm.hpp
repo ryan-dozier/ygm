@@ -249,8 +249,10 @@ class comm {
 
 
   std::vector<ygm::detail::byte_vector> m_vec_send_buffers;
-  size_t                                m_send_buffer_bytes = 0;
-  std::deque<int>                       m_send_dest_queue;
+  size_t                                m_send_local_buffer_bytes = 0;
+  size_t                                m_send_remote_buffer_bytes = 0;
+  std::deque<int>                       m_send_local_dest_queue;
+  std::deque<int>                       m_send_remote_dest_queue;
 
   std::deque<mpi_irecv_request>                          m_recv_queue;
   std::deque<mpi_isend_request>                          m_send_queue;
