@@ -19,8 +19,10 @@
 
 #include <ygm/detail/byte_vector.hpp>
 #include <ygm/comm.hpp>
+#include <ygm/detail/comm_environment.hpp>
 #include <ygm/detail/layout.hpp>
 
+namespace ygm {
 namespace shm {
 #define MAX_RANKS 256
 #define CACHELINE 64
@@ -37,8 +39,11 @@ static size_t max_msg_size;
 struct atomic_counters {
 public:
   inline size_t load() const { return cnt.load(); }
+  inline size_t load(std::memory_order o) const { return cnt.load(o); }
   inline void store(const size_t n) { cnt.store(n); }
+  inline void store(const size_t n, std::memory_order o) { cnt.store(n, o); }
   inline size_t fetch_add(const size_t n) { return cnt.fetch_add(n); }
+  inline size_t fetch_add(const size_t n, std::memory_order o) { return cnt.fetch_add(n, o); }
 private:
   alignas(CACHELINE) std::atomic<size_t> cnt;
 };
@@ -48,7 +53,7 @@ struct shm_stats {
   void send_bytes(const size_t bytes) { m_send_bytes += bytes; m_send++; }
   void recv_bytes(const size_t bytes) { m_recv_bytes += bytes; m_recv++; }
   void panic() { m_panic_used++; }
-
+  void reset() { m_send = 0; m_recv = 0; m_send_bytes = 0; m_recv_bytes = 0; m_panic_used = 0; }
   size_t m_send;
   size_t m_recv;
   size_t m_send_bytes;
@@ -115,30 +120,22 @@ public:
   shm_exchange(shm_exchange&&)       = default;
   shm_exchange& operator=(const shm_exchange& rhs) = default;
 
-  shm_exchange(const ygm::detail::layout& layout, const size_t shm_size, const size_t panic_size, const size_t panic_read_size) :
-                           m_local_rank(layout.local_id()), m_local_size(layout.local_size()), m_panic(panic_size), m_panic_read_size(panic_read_size), m_stats() {
-    initialize_filenames();
-    initialize_page_aligned_sizes(shm_size / m_local_size);
-    initialize_atomic_counters();
-    initialize_shared_memory_region();
-
-    // Ensure each shm region is created and populated by the rank which will be reading from it
-    MPI_Barrier(MPI_COMM_WORLD);
-    initialize_remote_shared_memory_regions();
-    MPI_Barrier(MPI_COMM_WORLD);
+  shm_exchange(const ygm::detail::layout& layout, const detail::comm_environment& env) : 
+                            m_local_rank(layout.local_id()), m_local_size(layout.local_size()), m_max_read_size(env.shm_max_buffer_read), 
+                            m_panic(env.buffer_size), m_panic_read_size(env.shm_panic_read_size), m_stats() {
+    build_shm_exchange(env.shm_buffer_size);
   }
 
-  shm_exchange(const size_t local_id, const size_t local_size, const size_t shm_size, const size_t panic_size, const size_t panic_read_size) :
-                           m_local_rank(local_id), m_local_size(local_size), m_panic(panic_size), m_panic_read_size(panic_read_size), m_stats() {
-    initialize_filenames();
-    initialize_page_aligned_sizes(shm_size / m_local_size);
-    initialize_atomic_counters();
-    initialize_shared_memory_region();
+  shm_exchange(const ygm::detail::layout& layout, const size_t shm_size, const size_t max_read_size, const size_t panic_size, const size_t panic_read_size) :
+                          m_local_rank(layout.local_id()), m_local_size(layout.local_size()), m_max_read_size(max_read_size), 
+                          m_panic(panic_size), m_panic_read_size(panic_read_size), m_stats() {
+    build_shm_exchange(shm_size);
+  }
 
-    // Ensure each shm region is created and populated by the rank which will be reading from it
-    MPI_Barrier(MPI_COMM_WORLD);
-    initialize_remote_shared_memory_regions();
-    MPI_Barrier(MPI_COMM_WORLD);
+  shm_exchange(const size_t local_id, const size_t local_size, const size_t shm_size, const size_t max_read_size, const size_t panic_size, const size_t panic_read_size) :
+                          m_local_rank(local_id), m_local_size(local_size), m_max_read_size(max_read_size), m_panic(panic_size), 
+                          m_panic_read_size(panic_read_size), m_stats() {
+    build_shm_exchange(shm_size);
   }
 
   /**
@@ -146,6 +143,17 @@ public:
    * they should not be called outside of the constructor.
    */
 private:
+  void build_shm_exchange(size_t shm_size) {
+    initialize_filenames();
+    initialize_page_aligned_sizes(shm_size / m_local_size);
+    initialize_atomic_counters();
+    initialize_shared_memory_region();
+
+    // Ensure each shm region is created and populated by the rank which will be reading from it
+    MPI_Barrier(MPI_COMM_WORLD);
+    initialize_remote_shared_memory_regions();
+    MPI_Barrier(MPI_COMM_WORLD);
+  }
   /**
    * @brief Initializes the filenames for shared memory regions and atomic counters.
    */
@@ -171,7 +179,7 @@ private:
     auto countersize = sizeof(atomic_counters) * MAX_RANKS;
     m_page_aligned_counter_size = ((countersize + pagesize - 1) / pagesize) * pagesize;
     max_msg_size = m_page_aligned_buffer_size / 2;
-
+    if(m_max_read_size < 0 || m_max_read_size > shm_size) m_max_read_size = m_page_aligned_buffer_size;
   }
 
   /**
@@ -304,8 +312,8 @@ private:
    * @return The number of bytes in the shared memory buffer.
    */
   inline size_t shm_size() const {
-    const size_t written_bytes = m_written_bytes[m_local_rank].load();
-    const size_t read_bytes = m_read_bytes[m_local_rank].load();
+    const size_t written_bytes = m_written_bytes[m_local_rank].load(std::memory_order_relaxed);
+    const size_t read_bytes = m_read_bytes[m_local_rank].load(std::memory_order_relaxed);
     return written_bytes - read_bytes;
   }
 
@@ -450,13 +458,18 @@ inline void wait_for_remote_progress(int dest, size_t reserve_start) {
         remaining_bytes = m_page_aligned_buffer_size - cur_index;
       }
 
-      // copy into the buffer, offset by partial reads, data is offset by the current index
-      m_panic.push_bytes(m_data[m_local_rank] + cur_index, sizeof(std::byte) * remaining_bytes);
-      read_bytes += remaining_bytes;
-      // Update the partial read, in the non-circular buffer to reduce atomic calls the reader would
-      // only update when the whole msg was read. However, other processes may be waiting to write
-      // into the region this is currently consuming from.
-      m_read_bytes[m_local_rank].fetch_add(remaining_bytes);
+      while(remaining_bytes > 0) {
+        size_t cur_read = std::min(remaining_bytes, m_max_read_size);
+        // copy into the buffer, offset by partial reads, data is offset by the current index
+        m_panic.push_bytes(m_data[m_local_rank] + cur_index, sizeof(std::byte) * cur_read);
+        read_bytes += cur_read;
+        cur_index += cur_read;
+        remaining_bytes -= cur_read;
+        // Update the partial read, in the non-circular buffer to reduce atomic calls the reader would
+        // only update when the whole msg was read. However, other processes may be waiting to write
+        // into the region this is currently consuming from.
+        m_read_bytes[m_local_rank].fetch_add(cur_read, std::memory_order_relaxed);
+      }
     }
     return available_to_read;
   }
@@ -539,9 +552,11 @@ inline void wait_for_remote_progress(int dest, size_t reserve_start) {
   // rank local
   ygm::detail::byte_vector    m_panic;
   size_t                      m_panic_read_size;
+  size_t                      m_max_read_size;
   // backoff function, need to run tests with and without it.
   backoff_helper              m_bh;
   shm_stats                   m_stats;
-};
-};
+};  // class shm_exchange
+};  // namespace shm
+};  // namespace ygm
 #endif

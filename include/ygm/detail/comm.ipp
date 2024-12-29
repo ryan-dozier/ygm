@@ -32,7 +32,7 @@ inline comm::comm(int *argc, char ***argv)
       m_layout(MPI_COMM_WORLD),
       m_router(m_layout, config.routing),
       m_shm_read(new ygm::detail::byte_vector(config.buffer_size)),
-      m_shm_exchange(m_layout, config.shm_buffer_size, config.buffer_size, config.shm_panic_read_size) {
+      m_shm_exchange(m_layout, config) {
   // pimpl_if = std::make_shared<detail::mpi_init_finalize>(argc, argv);
   comm_setup(MPI_COMM_WORLD);
 }
@@ -40,7 +40,7 @@ inline comm::comm(int *argc, char ***argv)
 inline comm::comm(MPI_Comm mcomm)
     : m_layout(mcomm), m_router(m_layout, config.routing),
       m_shm_read(new ygm::detail::byte_vector(config.buffer_size)),
-      m_shm_exchange(m_layout, config.shm_buffer_size, config.buffer_size, config.shm_panic_read_size) {
+      m_shm_exchange(m_layout, config) {
   pimpl_if.reset();
   int flag(0);
   YGM_ASSERT_MPI(MPI_Initialized(&flag));
