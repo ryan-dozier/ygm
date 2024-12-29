@@ -32,7 +32,7 @@ inline comm::comm(int *argc, char ***argv)
       m_layout(MPI_COMM_WORLD),
       m_router(m_layout, config.routing),
       m_shm_read(new ygm::detail::byte_vector(config.buffer_size)),
-      m_shm_exchange(m_layout, config) {
+      m_shm_exchange(m_layout, config, stats) {
   // pimpl_if = std::make_shared<detail::mpi_init_finalize>(argc, argv);
   comm_setup(MPI_COMM_WORLD);
 }
@@ -40,7 +40,7 @@ inline comm::comm(int *argc, char ***argv)
 inline comm::comm(MPI_Comm mcomm)
     : m_layout(mcomm), m_router(m_layout, config.routing),
       m_shm_read(new ygm::detail::byte_vector(config.buffer_size)),
-      m_shm_exchange(m_layout, config) {
+      m_shm_exchange(m_layout, config, stats) {
   pimpl_if.reset();
   int flag(0);
   YGM_ASSERT_MPI(MPI_Initialized(&flag));
@@ -107,7 +107,6 @@ inline void comm::welcome(std::ostream &os) {
 inline void comm::stats_reset() { stats.reset(); }
 inline void comm::stats_print(const std::string &name, std::ostream &os) {
   std::stringstream sstr;
-  shm::shm_stats shm = m_shm_exchange.get_stats();
   sstr << "============== STATS =================\n"
        << "NAME                     = " << name << "\n"
        << "TIME                     = " << stats.get_elapsed_time() << "\n"
@@ -122,11 +121,12 @@ inline void comm::stats_print(const std::string &name, std::ostream &os) {
        << "MAX_WAITSOME_IALLREDUCE  = "
        << all_reduce_max(stats.get_waitsome_iallreduce_time()) << "\n"
        << "COUNT_IALLREDUCE         = " << stats.get_iallreduce_count() << "\n"
-       << "SHM_SENDS                = " << all_reduce_sum(shm.m_send) << "\n"
-       << "SHM_SEND_BYTES           = " << all_reduce_sum(shm.m_send_bytes) << "\n"
-       << "SHM_RECV                 = " << all_reduce_sum(shm.m_recv) << "\n"
-       << "SHM_RECV_BYTES           = " << all_reduce_sum(shm.m_recv_bytes) << "\n"
-       << "SHM_PANICS               = " << all_reduce_sum(shm.m_panic_used) << "\n"
+       << "SHM_SEND_COUNT           = " << all_reduce_sum(stats.get_shm_send_count()) << "\n"
+       << "SHM_SEND_BYTES           = " << all_reduce_sum(stats.get_shm_send_bytes()) << "\n"
+       << "SHM_RECV_COUNT           = " << all_reduce_sum(stats.get_shm_receive_count()) << "\n"
+       << "SHM_RECV_BYTES           = " << all_reduce_sum(stats.get_shm_receive_bytes()) << "\n"
+       << "SHM_PANIC_COUNT          = " << all_reduce_sum(stats.get_shm_panic_used()) << "\n"
+       << "SHM_SKIP_COUNT           = " << all_reduce_sum(stats.get_shm_skipped()) << "\n"
        << "======================================";
 
   if (rank0()) {
@@ -551,13 +551,17 @@ inline void comm::flush_send_buffer(int dest) {
       m_free_send_buffers.pop_back();
     }
     request.buffer->swap(m_vec_send_buffers[dest]);
-    if (m_layout.is_local(dest) && request.buffer->size() < shm::max_msg_size) {
+
+    // Use shared memory
+    if (m_shm_exchange.can_use_shm(dest, request.buffer->size())) {     
       m_shm_exchange.send(m_layout.local_id(dest), request.buffer->data(), request.buffer->size());
       m_send_buffer_bytes -= request.buffer->size();
       stats.shm_send(m_layout.local_id(dest), request.buffer->size());
       request.buffer->clear();
       m_free_send_buffers.push_back(request.buffer);
-    } else {
+    
+    // Use MPI
+    } else {                                                            
       if (config.freq_issend > 0 && counter++ % config.freq_issend == 0) {
         YGM_ASSERT_MPI(MPI_Issend(request.buffer->data(), request.buffer->size(),
                               MPI_BYTE, dest, 0, m_comm_async,

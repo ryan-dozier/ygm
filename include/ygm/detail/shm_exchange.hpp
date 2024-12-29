@@ -20,6 +20,7 @@
 #include <ygm/detail/byte_vector.hpp>
 #include <ygm/comm.hpp>
 #include <ygm/detail/comm_environment.hpp>
+#include <ygm/detail/comm_stats.hpp>
 #include <ygm/detail/layout.hpp>
 
 namespace ygm {
@@ -46,19 +47,6 @@ public:
   inline size_t fetch_add(const size_t n, std::memory_order o) { return cnt.fetch_add(n, o); }
 private:
   alignas(CACHELINE) std::atomic<size_t> cnt;
-};
-
-struct shm_stats {
-  shm_stats() : m_send(0), m_recv(0), m_send_bytes(0), m_recv_bytes(0), m_panic_used(0) {}
-  void send_bytes(const size_t bytes) { m_send_bytes += bytes; m_send++; }
-  void recv_bytes(const size_t bytes) { m_recv_bytes += bytes; m_recv++; }
-  void panic() { m_panic_used++; }
-  void reset() { m_send = 0; m_recv = 0; m_send_bytes = 0; m_recv_bytes = 0; m_panic_used = 0; }
-  size_t m_send;
-  size_t m_recv;
-  size_t m_send_bytes;
-  size_t m_recv_bytes;
-  size_t m_panic_used;
 };
 
 /**
@@ -113,30 +101,25 @@ public:
 
 
   static_assert(sizeof(std::byte) == 1, "shm_exchange requires byte sized type.\n");
-  shm_exchange() : m_local_rank(-1), m_local_size(-1) {};
-
   shm_exchange(shm_exchange&)        = default;
   shm_exchange(const shm_exchange&)  = default;
   shm_exchange(shm_exchange&&)       = default;
   shm_exchange& operator=(const shm_exchange& rhs) = default;
 
-  shm_exchange(const ygm::detail::layout& layout, const detail::comm_environment& env) : 
+  shm_exchange(const ygm::detail::layout& layout, const detail::comm_environment& env, detail::comm_stats& stats) : 
                             m_local_rank(layout.local_id()), m_local_size(layout.local_size()), m_max_read_size(env.shm_max_buffer_read), 
-                            m_panic(env.buffer_size), m_panic_read_size(env.shm_panic_read_size), m_stats() {
+                            m_panic(env.buffer_size), m_panic_read_size(env.shm_panic_read_size), m_layout(layout), m_stats(stats) {
     build_shm_exchange(env.shm_buffer_size);
   }
 
-  shm_exchange(const ygm::detail::layout& layout, const size_t shm_size, const size_t max_read_size, const size_t panic_size, const size_t panic_read_size) :
-                          m_local_rank(layout.local_id()), m_local_size(layout.local_size()), m_max_read_size(max_read_size), 
-                          m_panic(panic_size), m_panic_read_size(panic_read_size), m_stats() {
-    build_shm_exchange(shm_size);
-  }
+  /* This constructor was going to be used as a standalone without a ygm::comm for validation, however to track how often
+   * a local communication skips our shm buffer due to the msg size and uses MPI I'm adding the layout to handle a "can_use_shm()" function
 
   shm_exchange(const size_t local_id, const size_t local_size, const size_t shm_size, const size_t max_read_size, const size_t panic_size, const size_t panic_read_size) :
                           m_local_rank(local_id), m_local_size(local_size), m_max_read_size(max_read_size), m_panic(panic_size), 
-                          m_panic_read_size(panic_read_size), m_stats() {
+                          m_panic_read_size(panic_read_size) {
     build_shm_exchange(shm_size);
-  }
+  } */
 
   /**
    * @brief This private block contains helper functions for the constructor to initialize the shm exchange
@@ -261,6 +244,17 @@ public:
   inline double utilized() const { return static_cast<double>(this->size()) / m_page_aligned_buffer_size; }
 
   /**
+   * @brief Returns the maximum size of the shared memory buffer.
+   * 
+   * @return size_t 
+   */
+  inline bool can_use_shm(const int dest, const size_t msgsize) {
+    bool can_use = m_layout.is_local(dest) && msgsize <= max_msg_size;
+    if (!can_use) m_stats.shm_skip();
+    return can_use;
+  }
+
+  /**
    * @brief Used by the producers. Inserts msgsize bytes into the destination shared buffer. This
    * function  is guarenteed to succeed so no return value.
    * 
@@ -275,7 +269,7 @@ public:
       throw std::runtime_error("SHM Buffer: Invalid destination detected. Dest: " + std::to_string(dest));
     if (msgsize == 0) return;
     shm_send(dest, (const std::byte*) msg, msgsize);
-    m_stats.send_bytes(msgsize);
+    m_stats.shm_send(dest, msgsize);
   }
 
   inline void send(const int dest, std::shared_ptr<ygm::detail::byte_vector>& buffer) {
@@ -298,12 +292,10 @@ public:
       m_panic.clear();
       YGM_ASSERT_RELEASE(m_panic.size() == 0);
       YGM_ASSERT_RELEASE(buffer->size() == receive_amount);
-      m_stats.recv_bytes(receive_amount);
+      m_stats.shm_receive(m_local_rank, receive_amount);
     }
     return receive_amount;
   }
-
-  inline shm_stats get_stats() const { return m_stats; }
 
 private:
   /**
@@ -400,7 +392,7 @@ inline void handle_consumer_overlap(const int dest, const std::byte* msg, size_t
       // could be that each round of iteration we increase the % threshold to do a panic read.
       if (this->utilized() > 0.5) {
           shm_receive(m_panic_read_size);
-          m_stats.panic();
+          m_stats.shm_panic();
       } else {
         m_bh.backoff();
       }
@@ -420,7 +412,7 @@ inline void wait_for_remote_progress(int dest, size_t reserve_start) {
     // Consume to alleviate deadlock if the buffer is more than 50% full
     if (this->utilized() > 0.5) {
       shm_receive(m_panic_read_size);
-      m_stats.panic();
+      m_stats.shm_panic();
     } else {
       m_bh.backoff();
     }
@@ -555,7 +547,9 @@ inline void wait_for_remote_progress(int dest, size_t reserve_start) {
   size_t                      m_max_read_size;
   // backoff function, need to run tests with and without it.
   backoff_helper              m_bh;
-  shm_stats                   m_stats;
+
+  detail::comm_stats&         m_stats;
+  const ygm::detail::layout&  m_layout;
 };  // class shm_exchange
 };  // namespace shm
 };  // namespace ygm
