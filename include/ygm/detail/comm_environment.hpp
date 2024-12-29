@@ -83,7 +83,7 @@ class comm_environment {
     os << "======== ENVIRONMENT SETTINGS ========\n"
        << "YGM_COMM_BUFFER_SIZE_KB  = " << buffer_size / 1024 << "\n"
        << "YGM_SHM_BUFFER_SIZE_KB   = " << shm_buffer_size / 1024 << "\n"
-       << "YGM_SHM_MAX_BUFFER_READ_KB  = " << shm_max_buffer_read / 1024 << "\n"
+       << "YGM_SHM_MAX_BUFFER_READ_KB  = " << ((shm_max_buffer_read == -1) ? "unlimited" : shm_max_buffer_read / 1024) << "\n"
        << "YGM_SHM_PANIC_READ_SIZE_KB   = " << shm_panic_read_size / 1024 << "\n"
        << "YGM_COMM_NUM_IRECVS      = " << num_irecvs << "\n"
        << "YGM_COMM_IRECVS_SIZE_KB  = " << irecv_size / 1024 << "\n"
