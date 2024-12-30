@@ -25,8 +25,9 @@
 
 namespace ygm {
 namespace shm {
-#define MAX_RANKS 256
+
 #define CACHELINE 64
+
 static size_t max_msg_size;
 
 /** 
@@ -86,7 +87,6 @@ struct backoff_helper {
  * designed as a shared memmory circular buffer for ranks on the same compute node to communicate
  * between eachother. The buffer supports variable msg sizes (insert and read operations are in
  * bytes).
- * @typedef std::byte, just a placeholder for std::byte, allowed for easier unit tests using char
  */
 class shm_exchange {
 private:
@@ -98,16 +98,13 @@ private:
   };
 
 public:
-
-
-  static_assert(sizeof(std::byte) == 1, "shm_exchange requires byte sized type.\n");
   shm_exchange(shm_exchange&)        = default;
   shm_exchange(const shm_exchange&)  = default;
   shm_exchange(shm_exchange&&)       = default;
   shm_exchange& operator=(const shm_exchange& rhs) = default;
 
   shm_exchange(const ygm::detail::layout& layout, const detail::comm_environment& env, detail::comm_stats& stats) : 
-                            m_local_rank(layout.local_id()), m_local_size(layout.local_size()), m_max_read_size(env.shm_max_buffer_read), 
+                            m_local_rank(layout.local_id()), m_local_size(layout.local_size()), m_data(m_local_size), m_max_read_size(env.shm_max_buffer_read), 
                             m_panic(env.local_buffer_size), m_panic_read_size(env.shm_panic_read_size), m_layout(layout), m_stats(stats) {
     build_shm_exchange(env.shm_buffer_size);
   }
@@ -159,10 +156,10 @@ private:
     m_page_aligned_buffer_size = ((shm_size + pagesize - 1) / pagesize) * pagesize;
 
     // Calculate the page-aligned size for the atomic counter arrays
-    auto countersize = sizeof(atomic_counters) * MAX_RANKS;
+    auto countersize = sizeof(atomic_counters) * m_local_size;
     m_page_aligned_counter_size = ((countersize + pagesize - 1) / pagesize) * pagesize;
     max_msg_size = m_page_aligned_buffer_size / 2;
-    if (m_max_read_size < 0 || m_max_read_size > shm_size) m_max_read_size = m_page_aligned_buffer_size;
+    if (m_max_read_size <= 0 || m_max_read_size > m_page_aligned_buffer_size) m_max_read_size = m_page_aligned_buffer_size;
   }
 
   /**
@@ -524,32 +521,30 @@ inline void wait_for_remote_progress(int dest, size_t reserve_start) {
     return shm_ptr;
   } 
 
-  // File sizes, and init info
-  size_t                      m_page_aligned_buffer_size;
-  size_t                      m_page_aligned_counter_size;
-
-  // File names
-  shm_filenames               m_filenames;
-
-  // these need to be shared, consider if renaming these could increase readability
-  atomic_counters*            m_reserved_bytes;         // reserves space in shm
-  atomic_counters*            m_written_bytes;          // writer location
-  atomic_counters*            m_read_bytes;             // reader location
-  std::byte*                  m_data[MAX_RANKS];        // shm region for each rank
-
   // MPI Info
   int                         m_local_rank;
   int                         m_local_size;
-
+  // File names
+  shm_filenames               m_filenames;
+  // File sizes, and init info
+  size_t                      m_page_aligned_buffer_size;
+  size_t                      m_page_aligned_counter_size;
   // rank local
   ygm::detail::byte_vector    m_panic;
   size_t                      m_panic_read_size;
   size_t                      m_max_read_size;
+
   // backoff function, need to run tests with and without it.
   backoff_helper              m_bh;
-
+  // YGM Info/ stat reporting
   detail::comm_stats&         m_stats;
   const ygm::detail::layout&  m_layout;
+
+  // these need to be stored in shared memory
+  atomic_counters*            m_reserved_bytes;         // reserves space in shm
+  atomic_counters*            m_written_bytes;          // writer location
+  atomic_counters*            m_read_bytes;             // reader location
+  std::vector<std::byte*>     m_data;                   // shm region for each rank
 };  // class shm_exchange
 };  // namespace shm
 };  // namespace ygm
