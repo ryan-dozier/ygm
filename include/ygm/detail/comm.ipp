@@ -193,14 +193,19 @@ inline void comm::async(int dest, AsyncFunction fn, const SendArgs &...args) {
   size_t header_bytes = 0;
   if (config.routing != detail::routing_type::NONE) {
     header_bytes = pack_header(m_vec_send_buffers[next_dest], dest, 0);
-    if (local) m_send_local_buffer_bytes += header_bytes;
-    else m_send_remote_buffer_bytes += header_bytes;
+    if (local)
+      m_send_local_buffer_bytes += header_bytes;
+    else
+      m_send_remote_buffer_bytes += header_bytes;
   }
 
   uint32_t bytes = pack_lambda(m_vec_send_buffers[next_dest], fn,
                                std::forward<const SendArgs>(args)...);
-  if (local) m_send_local_buffer_bytes += bytes;
-  else m_send_remote_buffer_bytes += bytes;
+
+  if (local)
+    m_send_local_buffer_bytes += bytes;
+  else
+    m_send_remote_buffer_bytes += bytes;
 
   // // Add message size to header
   if (config.routing != detail::routing_type::NONE) {
@@ -950,13 +955,17 @@ inline void comm::queue_message_bytes(const ygm::detail::byte_vector            
   // forwarded in a bcast
   if (config.routing != detail::routing_type::NONE) {
     size_t header_bytes = pack_header(send_buff, -1, 0);
-    if (local) m_send_local_buffer_bytes += header_bytes;
-    else m_send_remote_buffer_bytes += header_bytes;
+    if (local)
+      m_send_local_buffer_bytes += header_bytes;
+    else
+      m_send_remote_buffer_bytes += header_bytes;
   }
 
   send_buff.push_bytes(packed.data(), packed.size());
-  if (local) m_send_local_buffer_bytes += packed.size();
-  else m_send_remote_buffer_bytes += packed.size();
+  if (local)
+    m_send_local_buffer_bytes += packed.size();
+  else
+    m_send_remote_buffer_bytes += packed.size();
 }
 
 inline void comm::handle_next_shm_receive(std::shared_ptr<ygm::detail::byte_vector> &buffer,
@@ -992,22 +1001,28 @@ inline void comm::handle_next_receive_helper(std::shared_ptr<ygm::detail::byte_v
         int next_dest = m_router.next_hop(h.dest);
         bool local    = m_layout.is_local(next_dest);
         if (m_vec_send_buffers[next_dest].empty()) {
-          if (local) m_send_local_dest_queue.push_back(next_dest);
-          else m_send_remote_dest_queue.push_back(next_dest);
+          if (local)
+            m_send_local_dest_queue.push_back(next_dest);
+          else
+            m_send_remote_dest_queue.push_back(next_dest);
         }
 
         size_t header_bytes =
             pack_header(m_vec_send_buffers[next_dest], h.dest, h.message_size);
         
-        if (local) m_send_local_buffer_bytes += header_bytes;
-        else m_send_remote_buffer_bytes += header_bytes;
+        if (local)
+          m_send_local_buffer_bytes += header_bytes;
+        else
+          m_send_remote_buffer_bytes += header_bytes;
 
         size_t precopy_size = m_vec_send_buffers[next_dest].size();
         m_vec_send_buffers[next_dest].resize(precopy_size + h.message_size);
         iarchive.loadBinary(&m_vec_send_buffers[next_dest][precopy_size],
                             h.message_size);
-        if (local) m_send_local_buffer_bytes += h.message_size;
-        else m_send_remote_buffer_bytes += h.message_size;
+        if (local)
+          m_send_local_buffer_bytes += h.message_size;
+        else
+          m_send_remote_buffer_bytes += h.message_size;
 
         flush_to_capacity();
       }
