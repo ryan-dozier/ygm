@@ -17,8 +17,8 @@
 #include <unistd.h>
 #include <vector>
 
-#include <ygm/detail/byte_vector.hpp>
 #include <ygm/comm.hpp>
+#include <ygm/detail/byte_vector.hpp>
 #include <ygm/detail/comm_environment.hpp>
 #include <ygm/detail/comm_stats.hpp>
 #include <ygm/detail/layout.hpp>
@@ -47,6 +47,14 @@ public:
   inline size_t fetch_add(const size_t n, std::memory_order o) { return cnt.fetch_add(n, o); }
 private:
   alignas(CACHELINE) std::atomic<size_t> cnt;
+};
+
+struct aligned_integer {
+  size_t load() const { return value; }
+  void store(const size_t n) { value = n; __sync_synchronize(); }
+  void add(const size_t n) { value += n; __sync_synchronize(); }
+  size_t fetch_add(const size_t n) { size_t old = value; value += n; __sync_synchronize(); return old; }
+alignas(CACHELINE) size_t value;
 };
 
 /**
@@ -179,7 +187,7 @@ private:
     m_written_bytes = open_new_shm_region<atomic_counters>(m_filenames.m_written_fname.c_str(), m_page_aligned_counter_size);
     m_written_bytes[m_local_rank].store(0);
 
-    m_read_bytes = open_new_shm_region<atomic_counters>(m_filenames.m_read_fname.c_str(), m_page_aligned_counter_size);
+    m_read_bytes = open_new_shm_region<aligned_integer>(m_filenames.m_read_fname.c_str(), m_page_aligned_counter_size);
     m_read_bytes[m_local_rank].store(0);
   }
 
@@ -305,7 +313,7 @@ private:
    */
   inline size_t shm_size() const {
     const size_t written_bytes = m_written_bytes[m_local_rank].load(std::memory_order_relaxed);
-    const size_t read_bytes = m_read_bytes[m_local_rank].load(std::memory_order_relaxed);
+    const size_t read_bytes = m_read_bytes[m_local_rank].load();
     return written_bytes - read_bytes;
   }
 
@@ -460,7 +468,7 @@ inline void wait_for_remote_progress(int dest, size_t reserve_start) {
         // Update the partial read, in the non-circular buffer to reduce atomic calls the reader would
         // only update when the whole msg was read. However, other processes may be waiting to write
         // into the region this is currently consuming from.
-        m_read_bytes[m_local_rank].fetch_add(cur_read, std::memory_order_relaxed);
+        m_read_bytes[m_local_rank].add(cur_read);
       }
     }
     return available_to_read;
@@ -534,7 +542,7 @@ inline void wait_for_remote_progress(int dest, size_t reserve_start) {
   // these need to be shared, consider if renaming these could increase readability
   atomic_counters*            m_reserved_bytes;         // reserves space in shm
   atomic_counters*            m_written_bytes;          // writer location
-  atomic_counters*            m_read_bytes;             // reader location
+  aligned_integer*            m_read_bytes;             // reader location
   std::byte*                  m_data[MAX_RANKS];        // shm region for each rank
 
   // MPI Info
