@@ -9,6 +9,7 @@
 #include <fcntl.h>
 #include <iostream>
 #include <memory>
+#include <optional>
 #include <string>
 #include <sys/shm.h>
 #include <sys/mman.h>
@@ -39,22 +40,35 @@ static size_t max_msg_size;
  */
 struct atomic_counters {
 public:
-  inline size_t load() const { return cnt.load(); }
-  inline size_t load(std::memory_order o) const { return cnt.load(o); }
-  inline void store(const size_t n) { cnt.store(n); }
-  inline void store(const size_t n, std::memory_order o) { cnt.store(n, o); }
-  inline size_t fetch_add(const size_t n) { return cnt.fetch_add(n); }
-  inline size_t fetch_add(const size_t n, std::memory_order o) { return cnt.fetch_add(n, o); }
+  inline size_t load(const std::optional<std::memory_order> o = std::nullopt) const { 
+    if(o)
+      return cnt.load(o.value());
+    else
+      return cnt.load(); 
+  }
+  inline void store(const size_t n, const std::optional<std::memory_order> o = std::nullopt) {
+    if(o)
+      cnt.store(n, o.value());
+    else
+      cnt.store(n); 
+}
+  inline size_t fetch_add(const size_t n, const std::optional<std::memory_order> o = std::nullopt) {
+    if(o)
+      return cnt.fetch_add(n, o.value());
+    else
+      return cnt.fetch_add(n); 
+  }
 private:
   alignas(CACHELINE) std::atomic<size_t> cnt;
 };
 
 struct aligned_integer {
+public:
   size_t load() const { return value; }
   void store(const size_t n) { value = n; __sync_synchronize(); }
-  void add(const size_t n) { value += n; __sync_synchronize(); }
-  size_t fetch_add(const size_t n) { size_t old = value; value += n; __sync_synchronize(); return old; }
-alignas(CACHELINE) size_t value;
+  void add_and_synchronize(const size_t n) { value += n; __sync_synchronize(); }
+private:
+  alignas(CACHELINE) size_t value = 0;
 };
 
 /**
@@ -468,7 +482,7 @@ inline void wait_for_remote_progress(int dest, size_t reserve_start) {
         // Update the partial read, in the non-circular buffer to reduce atomic calls the reader would
         // only update when the whole msg was read. However, other processes may be waiting to write
         // into the region this is currently consuming from.
-        m_read_bytes[m_local_rank].add(cur_read);
+        m_read_bytes[m_local_rank].add_and_synchronize(cur_read);
       }
     }
     return available_to_read;
