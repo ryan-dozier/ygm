@@ -116,6 +116,8 @@ inline void comm::stats_print(const std::string &name, std::ostream &os) {
        << all_reduce_sum(stats.get_isend_count()) << "\n"
        << "GLOBAL_ISEND_BYTES       = "
        << all_reduce_sum(stats.get_isend_bytes()) << "\n"
+       << "GLOBAL_IRECV_BYTES       = "
+       << all_reduce_sum(stats.get_irecv_bytes()) << "\n"
        << "MAX_WAITSOME_ISEND_IRECV = "
        << all_reduce_max(stats.get_waitsome_isend_irecv_time()) << "\n"
        << "MAX_WAITSOME_IALLREDUCE  = "
