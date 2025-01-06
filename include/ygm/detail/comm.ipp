@@ -261,6 +261,7 @@ inline void comm::barrier() {
   }
   YGM_ASSERT_RELEASE(m_pre_barrier_callbacks.empty());
   YGM_ASSERT_RELEASE(m_send_dest_queue.empty());
+  YGM_ASSERT_RELEASE(m_shm_exchange.size() == 0);
 
   cf_barrier();
 }
