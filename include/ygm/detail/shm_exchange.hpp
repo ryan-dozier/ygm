@@ -309,6 +309,8 @@ private:
     return written_bytes - read_bytes;
   }
 
+  inline double shm_utilized() const { return static_cast<double>(this->shm_size()) / m_page_aligned_buffer_size; }
+
   /**
    * @brief Writes data to the shared memory (shm) region.
    * 
@@ -390,7 +392,7 @@ inline void handle_consumer_overlap(const int dest, const std::byte* msg, size_t
       // Consume to alleviate deadlock if the buffer is more than 50% full
       // TODO: Make a deadlock prone test case to see if this value should be tuneable, an idea for this 
       // could be that each round of iteration we increase the % threshold to do a panic read.
-      if (this->utilized() > 0.5) {
+      if (this->shm_utilized() > 0.5) {
           shm_receive(m_panic_read_size);
           m_stats.shm_panic();
       } else {
@@ -410,7 +412,7 @@ inline void handle_consumer_overlap(const int dest, const std::byte* msg, size_t
 inline void wait_for_remote_progress(int dest, size_t reserve_start) {
   while (m_written_bytes[dest].load() != reserve_start) {
     // Consume to alleviate deadlock if the buffer is more than 50% full
-    if (this->utilized() > 0.5) {
+    if (this->shm_utilized() > 0.5) {
       shm_receive(m_panic_read_size);
       m_stats.shm_panic();
     } else {

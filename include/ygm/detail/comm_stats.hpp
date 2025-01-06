@@ -36,7 +36,7 @@ class comm_stats {
   }
 
   void shm_panic() { m_panic_used += 1; }
-  void shm_skip() { shm_skipped += 1; }
+  void shm_skip() { m_shm_skipped += 1; }
 
   void isend(int dest, size_t bytes) {
     m_isend_count += 1;
@@ -74,10 +74,12 @@ class comm_stats {
     m_async_count                = 0;
     m_rpc_count                  = 0;
     m_route_count                = 0;
-    m_shm_send_count           = 0;
-    m_shm_send_bytes           = 0;
-    m_shm_receive_count             = 0;
-    m_shm_receive_bytes             = 0;
+    m_shm_send_count             = 0;
+    m_shm_send_bytes             = 0;
+    m_shm_receive_count          = 0;
+    m_shm_receive_bytes          = 0;
+    m_panic_used                 = 0;
+    m_shm_skipped                = 0;
     m_isend_count                = 0;
     m_isend_bytes                = 0;
     m_isend_test_count           = 0;
@@ -101,7 +103,7 @@ class comm_stats {
   size_t get_shm_receive_count() const { return m_shm_receive_count; }
   size_t get_shm_receive_bytes() const { return m_shm_receive_bytes; }
   size_t get_shm_panic_used() const { return m_panic_used; }
-  size_t get_shm_skipped() const { return shm_skipped; }
+  size_t get_shm_skipped() const { return m_shm_skipped; }
 
   size_t get_isend_count() const { return m_isend_count; }
   size_t get_isend_bytes() const { return m_isend_bytes; }
@@ -138,7 +140,7 @@ class comm_stats {
   size_t m_shm_receive_count = 0;
   size_t m_shm_receive_bytes = 0;
   size_t m_panic_used = 0;
-  size_t shm_skipped = 0;
+  size_t m_shm_skipped = 0;
 
   size_t m_isend_count      = 0;
   size_t m_isend_bytes      = 0;
