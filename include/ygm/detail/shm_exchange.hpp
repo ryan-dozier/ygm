@@ -250,7 +250,7 @@ public:
    */
   inline bool can_use_shm(const int dest, const size_t msgsize) {
     bool can_use = m_layout.is_local(dest) && msgsize <= max_msg_size;
-    if (!can_use) m_stats.shm_skip();
+    if (msgsize <= max_msg_size) m_stats.shm_skip();
     return can_use;
   }
 
