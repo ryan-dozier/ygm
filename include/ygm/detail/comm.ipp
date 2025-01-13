@@ -603,9 +603,11 @@ inline void comm::flush_send_buffer(int dest) {
 }
 
 inline void comm::queue_next_send(std::deque<int>& queue) {
-  int dest = queue.front();
-  queue.pop_front();
-  flush_send_buffer(dest);
+  if (!queue.empty()) {
+    int dest = queue.front();
+    queue.pop_front();
+    flush_send_buffer(dest);
+  }
 }
 
 /**
