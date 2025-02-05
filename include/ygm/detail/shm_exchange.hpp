@@ -64,8 +64,8 @@ private:
 
 struct aligned_integer {
 public:
-  size_t load() const { return value; }
-  void store(const size_t n) { value = n; __sync_synchronize(); }
+  size_t get_value() const { return value; }
+  void store_and_synchronize(const size_t n) { value = n; __sync_synchronize(); }
   void add_and_synchronize(const size_t n) { value += n; __sync_synchronize(); }
 private:
   alignas(CACHELINE) size_t value = 0;
@@ -120,9 +120,6 @@ private:
   };
 
 public:
-
-
-  static_assert(sizeof(std::byte) == 1, "shm_exchange requires byte sized type.\n");
   shm_exchange(shm_exchange&)        = default;
   shm_exchange(const shm_exchange&)  = default;
   shm_exchange(shm_exchange&&)       = default;
@@ -148,9 +145,9 @@ public:
    * they should not be called outside of the constructor.
    */
 private:
-  void build_shm_exchange(size_t shm_size) {
+  void build_shm_exchange(size_t global_shm_size) {
     initialize_filenames();
-    initialize_page_aligned_sizes(shm_size / m_local_size);
+    initialize_page_aligned_sizes(global_shm_size / m_local_size);
     initialize_atomic_counters();
     initialize_shared_memory_region();
 
@@ -202,7 +199,7 @@ private:
     m_written_bytes[m_local_rank].store(0);
 
     m_read_bytes = open_new_shm_region<aligned_integer>(m_filenames.m_read_fname.c_str(), m_page_aligned_counter_size);
-    m_read_bytes[m_local_rank].store(0);
+    m_read_bytes[m_local_rank].store_and_synchronize(0);
   }
 
   /**
@@ -327,7 +324,7 @@ private:
    */
   inline size_t shm_size() const {
     const size_t written_bytes = m_written_bytes[m_local_rank].load(std::memory_order_relaxed);
-    const size_t read_bytes = m_read_bytes[m_local_rank].load();
+    const size_t read_bytes = m_read_bytes[m_local_rank].get_value();
     return written_bytes - read_bytes;
   }
 
@@ -395,9 +392,9 @@ inline void handle_consumer_overlap(const int dest, const std::byte* msg, size_t
   // This is done to prevent the writer from overwriting data that the consumer has not yet read.
   // In the mean time, we can copy data from our current read buffer into the panic buffer to not only
   // prevent deadlock, but make some progress while waiting for other processes.
-  for (size_t consumed_index = m_read_bytes[dest].load() % m_page_aligned_buffer_size;
+  for (size_t consumed_index = m_read_bytes[dest].get_value() % m_page_aligned_buffer_size;
       (cur_index < consumed_index) && ((cur_index + cur_msgsize) > consumed_index);
-       consumed_index = m_read_bytes[dest].load() % m_page_aligned_buffer_size) {
+       consumed_index = m_read_bytes[dest].get_value() % m_page_aligned_buffer_size) {
 
     // Calculate the available bytes between the tail and the head
     int cur_avail = consumed_index - cur_index;
@@ -454,7 +451,7 @@ inline void wait_for_remote_progress(int dest, size_t reserve_start) {
     // The writtenbytes.load() is our linearization point for reading.
     // The only process which updates the readbytes is the rank owning the buffer.
     size_t cur_tail = m_written_bytes[m_local_rank].load();
-    size_t cur_head = m_read_bytes[m_local_rank].load();
+    size_t cur_head = m_read_bytes[m_local_rank].get_value();
     size_t read_bytes = 0;
 
     // Calculate the amount of data available to read
