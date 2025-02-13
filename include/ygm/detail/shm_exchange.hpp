@@ -260,6 +260,7 @@ public:
    * @param msgsize size of the container
    */
   inline void send(const int dest, std::byte* msg, const size_t msgsize) {
+    YGM_ASSERT_RELEASE(msgsize <= max_msg_size);
     if (msgsize < 0)
       throw std::runtime_error("SHM Buffer: Invalid msgsize detected. Size: " + std::to_string(msgsize));
     if (dest < 0 || dest >= m_local_size)
@@ -306,6 +307,14 @@ private:
     return written_bytes - read_bytes;
   }
 
+  inline double shm_utilized() const { return static_cast<double>(this->shm_size()) / m_page_aligned_buffer_size; }
+  
+  inline double shm_utilized_at(size_t dest) const { 
+    const size_t written_bytes = m_written_bytes[dest].load(std::memory_order_relaxed);
+    const size_t read_bytes = m_read_bytes[dest].load(std::memory_order_relaxed);
+    return static_cast<double>(written_bytes - read_bytes) / m_page_aligned_buffer_size; 
+  }
+
   /**
    * @brief Writes data to the shared memory (shm) region.
    * 
@@ -327,6 +336,7 @@ private:
 
       // Check if the current msg will fit within the buffer
       if (cur_index + cur_msgsize > m_page_aligned_buffer_size) {
+        size_t old_msgsize = cur_msgsize;
         cur_msgsize = m_page_aligned_buffer_size - cur_index;
       } 
       
@@ -370,12 +380,14 @@ inline void handle_consumer_overlap(const int dest, const std::byte* msg, size_t
   // This is done to prevent the writer from overwriting data that the consumer has not yet read.
   // In the mean time, we can copy data from our current read buffer into the panic buffer to not only
   // prevent deadlock, but make some progress while waiting for other processes.
-  for (size_t consumed_index = m_read_bytes[dest].load() % m_page_aligned_buffer_size;
-      (cur_index < consumed_index) && ((cur_index + cur_msgsize) > consumed_index);
-       consumed_index = m_read_bytes[dest].load() % m_page_aligned_buffer_size) {
-
+  size_t read_bytes = m_read_bytes[dest].load();
+  size_t read_index = read_bytes % m_page_aligned_buffer_size;
+  while (read_bytes < (reserve_start + written_bytes) 
+        && ((cur_index <= read_index) && ((cur_index + cur_msgsize) > read_index))) {
+    size_t writer_bytes = m_written_bytes[dest].load();
+    size_t writer_index = writer_bytes % m_page_aligned_buffer_size;
     // Calculate the available bytes between the tail and the head
-    int cur_avail = consumed_index - cur_index;
+    size_t cur_avail = read_index - cur_index;
     if (cur_avail > 0) {
       // Copy data in the buffer up to the tail
       std::memcpy(m_data[dest] + cur_index, msg + written_bytes, sizeof(std::byte) * cur_avail);
@@ -387,13 +399,15 @@ inline void handle_consumer_overlap(const int dest, const std::byte* msg, size_t
       // Consume to alleviate deadlock if the buffer is more than 50% full
       // TODO: Make a deadlock prone test case to see if this value should be tuneable, an idea for this 
       // could be that each round of iteration we increase the % threshold to do a panic read.
-      if (this->utilized() > 0.5) {
+      if (this->shm_utilized() >= 0.4) {
           shm_receive(m_panic_read_size);
           m_stats.shm_panic();
-      } else {
-        m_bh.backoff();
       }
     }
+    m_bh.backoff();
+    // get the current read position (updated by another process)
+    read_bytes = m_read_bytes[dest].load();
+    read_index = read_bytes % m_page_aligned_buffer_size;
   }
   m_bh.reset();
 }
@@ -404,10 +418,12 @@ inline void handle_consumer_overlap(const int dest, const std::byte* msg, size_t
  * @param dest The destination index in the shared memory region.
  * @param reserve_start The starting index of the reserved space.
  */
-inline void wait_for_remote_progress(int dest, size_t reserve_start) {
+inline void wait_for_remote_progress(const int dest, const size_t reserve_start) {
+  size_t counter = 0;
   while (m_written_bytes[dest].load() != reserve_start) {
+      if(counter++ == 1000000) std::cout << m_local_rank << " " << this->shm_utilized() << " " << dest << " " << shm_utilized_at(dest) << std::endl; 
     // Consume to alleviate deadlock if the buffer is more than 50% full
-    if (this->utilized() > 0.5) {
+    if (this->shm_utilized() >= 0.4) {
       shm_receive(m_panic_read_size);
       m_stats.shm_panic();
     } else {
