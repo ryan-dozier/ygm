@@ -26,8 +26,9 @@
 
 namespace ygm {
 namespace shm {
-#define MAX_RANKS 256
+
 #define CACHELINE 64
+
 static size_t max_msg_size;
 
 /** 
@@ -108,7 +109,6 @@ struct backoff_helper {
  * designed as a shared memmory circular buffer for ranks on the same compute node to communicate
  * between eachother. The buffer supports variable msg sizes (insert and read operations are in
  * bytes).
- * @typedef std::byte, just a placeholder for std::byte, allowed for easier unit tests using char
  */
 class shm_exchange {
 private:
@@ -120,17 +120,14 @@ private:
   };
 
 public:
-
-
-  static_assert(sizeof(std::byte) == 1, "shm_exchange requires byte sized type.\n");
   shm_exchange(shm_exchange&)        = default;
   shm_exchange(const shm_exchange&)  = default;
   shm_exchange(shm_exchange&&)       = default;
   shm_exchange& operator=(const shm_exchange& rhs) = default;
 
   shm_exchange(const ygm::detail::layout& layout, const detail::comm_environment& env, detail::comm_stats& stats) : 
-                            m_local_rank(layout.local_id()), m_local_size(layout.local_size()), m_max_read_size(env.shm_max_buffer_read), 
-                            m_panic(env.buffer_size), m_panic_read_size(env.shm_panic_read_size), m_layout(layout), m_stats(stats) {
+                            m_local_rank(layout.local_id()), m_local_size(layout.local_size()), m_data(m_local_size), m_max_read_size(env.shm_max_buffer_read), 
+                            m_panic(env.local_buffer_size), m_panic_read_size(env.shm_panic_read_size), m_layout(layout), m_stats(stats) {
     build_shm_exchange(env.shm_buffer_size);
   }
 
@@ -181,10 +178,10 @@ private:
     m_page_aligned_buffer_size = ((shm_size + pagesize - 1) / pagesize) * pagesize;
 
     // Calculate the page-aligned size for the atomic counter arrays
-    auto countersize = sizeof(atomic_counters) * MAX_RANKS;
+    auto countersize = sizeof(atomic_counters) * m_local_size;
     m_page_aligned_counter_size = ((countersize + pagesize - 1) / pagesize) * pagesize;
     max_msg_size = m_page_aligned_buffer_size / 2;
-    if(m_max_read_size < 0 || m_max_read_size > shm_size) m_max_read_size = m_page_aligned_buffer_size;
+    if (m_max_read_size <= 0 || m_max_read_size > m_page_aligned_buffer_size) m_max_read_size = m_page_aligned_buffer_size;
   }
 
   /**
@@ -241,7 +238,7 @@ public:
     // Ensure all processes reach this point before unlinking shared memory regions
     int finalized;
     MPI_Finalized(&finalized);
-    if(!finalized) MPI_Barrier(MPI_COMM_WORLD);
+    if (!finalized) MPI_Barrier(MPI_COMM_WORLD);
 
     if (m_local_rank == 0) {
       shm_unlink(m_filenames.m_reserve_fname.c_str());
@@ -249,7 +246,7 @@ public:
       shm_unlink(m_filenames.m_read_fname.c_str());
     }
     shm_unlink(std::string(get_rank_filename((const int) m_local_rank)).c_str());
-    if(!finalized)
+    if (!finalized)
       MPI_Barrier(MPI_COMM_WORLD);
   }
 
@@ -285,9 +282,10 @@ public:
    * @param msgsize size of the container
    */
   inline void send(const int dest, std::byte* msg, const size_t msgsize) {
+    YGM_ASSERT_RELEASE(msgsize <= max_msg_size);
     if (msgsize < 0)
       throw std::runtime_error("SHM Buffer: Invalid msgsize detected. Size: " + std::to_string(msgsize));
-    if(dest < 0 || dest >= m_local_size)
+    if (dest < 0 || dest >= m_local_size)
       throw std::runtime_error("SHM Buffer: Invalid destination detected. Dest: " + std::to_string(dest));
     if (msgsize == 0) return;
     shm_send(dest, (const std::byte*) msg, msgsize);
@@ -308,7 +306,7 @@ public:
    */
   inline size_t receive(std::shared_ptr<ygm::detail::byte_vector>& buffer) {
     size_t receive_amount = this->size();
-    if(receive_amount > 0) {
+    if (receive_amount > 0) {
       shm_receive(receive_amount - m_panic.size());
       buffer->swap(m_panic);
       m_panic.clear();
@@ -329,6 +327,14 @@ private:
     const size_t written_bytes = m_written_bytes[m_local_rank].load(std::memory_order_relaxed);
     const size_t read_bytes = m_read_bytes[m_local_rank].load();
     return written_bytes - read_bytes;
+  }
+
+  inline double shm_utilized() const { return static_cast<double>(this->shm_size()) / m_page_aligned_buffer_size; }
+  
+  inline double shm_utilized_at(size_t dest) const { 
+    const size_t written_bytes = m_written_bytes[dest].load(std::memory_order_relaxed);
+    const size_t read_bytes = m_read_bytes[dest].load();
+    return static_cast<double>(written_bytes - read_bytes) / m_page_aligned_buffer_size; 
   }
 
   /**
@@ -352,6 +358,7 @@ private:
 
       // Check if the current msg will fit within the buffer
       if (cur_index + cur_msgsize > m_page_aligned_buffer_size) {
+        size_t old_msgsize = cur_msgsize;
         cur_msgsize = m_page_aligned_buffer_size - cur_index;
       } 
       
@@ -395,12 +402,14 @@ inline void handle_consumer_overlap(const int dest, const std::byte* msg, size_t
   // This is done to prevent the writer from overwriting data that the consumer has not yet read.
   // In the mean time, we can copy data from our current read buffer into the panic buffer to not only
   // prevent deadlock, but make some progress while waiting for other processes.
-  for (size_t consumed_index = m_read_bytes[dest].load() % m_page_aligned_buffer_size;
-      (cur_index < consumed_index) && ((cur_index + cur_msgsize) > consumed_index);
-       consumed_index = m_read_bytes[dest].load() % m_page_aligned_buffer_size) {
-
+  size_t read_bytes = m_read_bytes[dest].load();
+  size_t read_index = read_bytes % m_page_aligned_buffer_size;
+  while (read_bytes < (reserve_start + written_bytes) 
+        && ((cur_index <= read_index) && ((cur_index + cur_msgsize) > read_index))) {
+    size_t writer_bytes = m_written_bytes[dest].load();
+    size_t writer_index = writer_bytes % m_page_aligned_buffer_size;
     // Calculate the available bytes between the tail and the head
-    int cur_avail = consumed_index - cur_index;
+    size_t cur_avail = read_index - cur_index;
     if (cur_avail > 0) {
       // Copy data in the buffer up to the tail
       std::memcpy(m_data[dest] + cur_index, msg + written_bytes, sizeof(std::byte) * cur_avail);
@@ -412,13 +421,15 @@ inline void handle_consumer_overlap(const int dest, const std::byte* msg, size_t
       // Consume to alleviate deadlock if the buffer is more than 50% full
       // TODO: Make a deadlock prone test case to see if this value should be tuneable, an idea for this 
       // could be that each round of iteration we increase the % threshold to do a panic read.
-      if (this->utilized() > 0.5) {
+      if (this->shm_utilized() >= 0.4) {
           shm_receive(m_panic_read_size);
           m_stats.shm_panic();
-      } else {
-        m_bh.backoff();
       }
     }
+    m_bh.backoff();
+    // get the current read position (updated by another process)
+    read_bytes = m_read_bytes[dest].load();
+    read_index = read_bytes % m_page_aligned_buffer_size;
   }
   m_bh.reset();
 }
@@ -429,10 +440,12 @@ inline void handle_consumer_overlap(const int dest, const std::byte* msg, size_t
  * @param dest The destination index in the shared memory region.
  * @param reserve_start The starting index of the reserved space.
  */
-inline void wait_for_remote_progress(int dest, size_t reserve_start) {
+inline void wait_for_remote_progress(const int dest, const size_t reserve_start) {
+  size_t counter = 0;
   while (m_written_bytes[dest].load() != reserve_start) {
+      if(counter++ == 1000000) std::cout << m_local_rank << " " << this->shm_utilized() << " " << dest << " " << shm_utilized_at(dest) << std::endl; 
     // Consume to alleviate deadlock if the buffer is more than 50% full
-    if (this->utilized() > 0.5) {
+    if (this->shm_utilized() >= 0.4) {
       shm_receive(m_panic_read_size);
       m_stats.shm_panic();
     } else {
@@ -453,7 +466,7 @@ inline void wait_for_remote_progress(int dest, size_t reserve_start) {
     // Get the current readbytes and writtenbytes pointers.
     // The writtenbytes.load() is our linearization point for reading.
     // The only process which updates the readbytes is the rank owning the buffer.
-    size_t cur_tail = m_written_bytes[m_local_rank].load();
+    size_t cur_tail = m_written_bytes[m_local_rank].load(std::memory_order_relaxed);
     size_t cur_head = m_read_bytes[m_local_rank].load();
     size_t read_bytes = 0;
 
@@ -472,7 +485,7 @@ inline void wait_for_remote_progress(int dest, size_t reserve_start) {
         remaining_bytes = m_page_aligned_buffer_size - cur_index;
       }
 
-      while(remaining_bytes > 0) {
+      while (remaining_bytes > 0) {
         size_t cur_read = std::min(remaining_bytes, m_max_read_size);
         // copy into the buffer, offset by partial reads, data is offset by the current index
         m_panic.push_bytes(m_data[m_local_rank] + cur_index, sizeof(std::byte) * cur_read);
@@ -546,6 +559,11 @@ inline void wait_for_remote_progress(int dest, size_t reserve_start) {
     return shm_ptr;
   } 
 
+  // MPI Info
+  int                         m_local_rank;
+  int                         m_local_size;
+  // File names
+  shm_filenames               m_filenames;
   // File sizes, and init info
   size_t                      m_page_aligned_buffer_size;
   size_t                      m_page_aligned_counter_size;
@@ -557,7 +575,7 @@ inline void wait_for_remote_progress(int dest, size_t reserve_start) {
   atomic_counters*            m_reserved_bytes;         // reserves space in shm
   atomic_counters*            m_written_bytes;          // writer location
   aligned_integer*            m_read_bytes;             // reader location
-  std::byte*                  m_data[MAX_RANKS];        // shm region for each rank
+  std::vector<std::byte*>     m_data;                   // shm region for each rank
 
   // MPI Info
   int                         m_local_rank;
@@ -567,9 +585,10 @@ inline void wait_for_remote_progress(int dest, size_t reserve_start) {
   ygm::detail::byte_vector    m_panic;
   size_t                      m_panic_read_size;
   size_t                      m_max_read_size;
+
   // backoff function, need to run tests with and without it.
   backoff_helper              m_bh;
-
+  // YGM Info/ stat reporting
   detail::comm_stats&         m_stats;
   const ygm::detail::layout&  m_layout;
 };  // class shm_exchange

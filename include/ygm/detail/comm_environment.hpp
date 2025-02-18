@@ -36,8 +36,11 @@ class comm_environment {
 
  public:
   comm_environment() {
-    if (const char* cc = std::getenv("YGM_COMM_BUFFER_SIZE_KB")) {
-      buffer_size = convert<size_t>(cc) * 1024;
+    if (const char* cc = std::getenv("YGM_COMM_LOCAL_BUFFER_SIZE_KB")) {
+      local_buffer_size = convert<size_t>(cc) * 1024;
+    }
+    if (const char* cc = std::getenv("YGM_COMM_REMOTE_BUFFER_SIZE_KB")) {
+      remote_buffer_size = convert<size_t>(cc) * 1024;
     }
     if (const char* cc = std::getenv("YGM_SHM_BUFFER_SIZE_KB")) {
       shm_buffer_size = convert<size_t>(cc) * 1024;
@@ -81,15 +84,16 @@ class comm_environment {
 
   void print(std::ostream& os = std::cout) const {
     os << "======== ENVIRONMENT SETTINGS ========\n"
-       << "YGM_COMM_BUFFER_SIZE_KB    = " << buffer_size / 1024 << "\n"
-       << "YGM_SHM_BUFFER_SIZE_KB     = " << shm_buffer_size / 1024 << "\n"
-       << "YGM_SHM_MAX_BUFFER_READ_KB = " << ((shm_max_buffer_read == -1) ? "unlimited" : std::to_string(shm_max_buffer_read / 1024)) << "\n"
-       << "YGM_SHM_PANIC_READ_SIZE_KB = " << shm_panic_read_size / 1024 << "\n"
-       << "YGM_COMM_NUM_IRECVS        = " << num_irecvs << "\n"
-       << "YGM_COMM_IRECVS_SIZE_KB    = " << irecv_size / 1024 << "\n"
-       << "YGM_COMM_NUM_ISENDS_WAIT   = " << num_isends_wait << "\n"
-       << "YGM_COMM_ISSEND_FREQ       = " << freq_issend << "\n"
-       << "YGM_COMM_ROUTING           = ";
+       << "YGM_COMM_LOCAL_BUFFER_SIZE_KB   = " << local_buffer_size / 1024 << "\n"
+       << "YGM_COMM_REMOTE_BUFFER_SIZE_KB  = " << remote_buffer_size / 1024 << "\n"
+       << "YGM_COMM_SHM_BUFFER_SIZE_KB     = " << shm_buffer_size / 1024 << "\n"
+       << "YGM_COMM_SHM_MAX_BUFFER_READ_KB = " << ((shm_max_buffer_read == -1) ? "unlimited" : std::to_string(shm_max_buffer_read / 1024)) << "\n"
+       << "YGM_COMM_SHM_PANIC_READ_SIZE_KB = " << shm_panic_read_size / 1024 << "\n"
+       << "YGM_COMM_NUM_IRECVS             = " << num_irecvs << "\n"
+       << "YGM_COMM_IRECVS_SIZE_KB         = " << irecv_size / 1024 << "\n"
+       << "YGM_COMM_NUM_ISENDS_WAIT        = " << num_isends_wait << "\n"
+       << "YGM_COMM_ISSEND_FREQ            = " << freq_issend << "\n"
+       << "YGM_COMM_ROUTING                = ";
     switch (routing) {
       case routing_type::NONE:
         os << "NONE\n";
@@ -106,7 +110,8 @@ class comm_environment {
 
   //
   // variables with their default values
-  size_t buffer_size = 16 * 1024 * 1024;
+  size_t local_buffer_size = 16 * 1024 * 1024;
+  size_t remote_buffer_size = 16 * 1024 * 1024;
 
   size_t irecv_size = 1024 * 1024 * 1024;
   size_t num_irecvs = 8;
