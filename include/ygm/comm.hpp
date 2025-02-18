@@ -9,8 +9,10 @@
 #include <functional>
 #include <memory>
 #include <utility>
+#include <utility>
 #include <vector>
 
+#include <ygm/detail/byte_vector.hpp>
 #include <ygm/detail/byte_vector.hpp>
 #include <ygm/detail/comm_environment.hpp>
 #include <ygm/detail/comm_router.hpp>
@@ -190,6 +192,8 @@ class comm {
 
   std::pair<uint64_t, uint64_t> barrier_reduce_counts();
 
+  void flush_next_send(std::deque<int> &dest_queue);
+  
   void flush_send_buffer(int dest);
 
   void queue_next_send(std::deque<int>& queue);
@@ -249,15 +253,15 @@ class comm {
   MPI_Comm m_comm_barrier;
   MPI_Comm m_comm_other;
 
-
   std::vector<ygm::detail::byte_vector> m_vec_send_buffers;
-  size_t                                m_send_local_buffer_bytes = 0;
-  size_t                                m_send_remote_buffer_bytes = 0;
-  std::deque<int>                       m_send_local_dest_queue;
-  std::deque<int>                       m_send_remote_dest_queue;
 
-  std::deque<mpi_irecv_request>                          m_recv_queue;
-  std::deque<mpi_isend_request>                          m_send_queue;
+  size_t                              m_send_local_buffer_bytes = 0;
+  std::deque<int>                     m_send_local_dest_queue;
+  size_t                              m_send_remote_buffer_bytes = 0;
+  std::deque<int>                     m_send_remote_dest_queue;
+
+  std::deque<mpi_irecv_request>                        m_recv_queue;
+  std::deque<mpi_isend_request>                        m_send_queue;
   std::vector<std::shared_ptr<ygm::detail::byte_vector>> m_free_send_buffers;
 
   size_t m_pending_isend_bytes = 0;
@@ -272,8 +276,8 @@ class comm {
   bool m_in_process_receive_queue = false;
 
   detail::comm_stats             stats;
-  const detail::comm_environment config;
   const detail::layout           m_layout;
+  const detail::comm_environment config = detail::comm_environment(m_layout);
   detail::comm_router            m_router;
 
   // These need the config and layout

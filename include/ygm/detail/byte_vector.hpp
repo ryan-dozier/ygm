@@ -71,8 +71,6 @@ public:
   byte_vector(byte_vector&)        = default;
   byte_vector(const byte_vector&)  = default;
   byte_vector(byte_vector&&)       = default;
-  byte_vector& operator=(const byte_vector& rhs) = default;
-
 
   const reference operator[](int i) const { return m_data[i]; }
   reference operator[](int i) { return m_data[i]; }
