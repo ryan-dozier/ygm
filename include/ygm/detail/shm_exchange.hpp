@@ -162,8 +162,8 @@ private:
   void initialize_filenames() {
     m_filenames.m_data_fname = "ygm_shm_exchange_";
     m_filenames.m_reserve_fname = "ygm_shm_reserve";
-    m_filenames.m_written_fname = "ygm_shm_tail";
-    m_filenames.m_read_fname = "ygm_shm_head";
+    m_filenames.m_written_fname = "ygm_shm_written_bytes";
+    m_filenames.m_read_fname = "ygm_shm_read_bytes";
   }
 
   /**
@@ -408,10 +408,10 @@ inline void handle_consumer_overlap(const int dest, const std::byte* msg, size_t
         && ((cur_index <= read_index) && ((cur_index + cur_msgsize) > read_index))) {
     size_t writer_bytes = m_written_bytes[dest].load();
     size_t writer_index = writer_bytes % m_page_aligned_buffer_size;
-    // Calculate the available bytes between the tail and the head
+    // Calculate the available bytes between the writer and the reader
     size_t cur_avail = read_index - cur_index;
     if (cur_avail > 0) {
-      // Copy data in the buffer up to the tail
+      // Copy data in the buffer up to the remote reader's location
       std::memcpy(m_data[dest] + cur_index, msg + written_bytes, sizeof(std::byte) * cur_avail);
       // Update to reflect the partial write
       written_bytes += cur_avail;
@@ -466,31 +466,31 @@ inline void wait_for_remote_progress(const int dest, const size_t reserve_start)
     // Get the current readbytes and writtenbytes pointers.
     // The writtenbytes.load() is our linearization point for reading.
     // The only process which updates the readbytes is the rank owning the buffer.
-    size_t cur_tail = m_written_bytes[m_local_rank].load(std::memory_order_relaxed);
-    size_t cur_head = m_read_bytes[m_local_rank].get_value();
+    size_t cur_write_loc = m_written_bytes[m_local_rank].load(std::memory_order_relaxed);
+    size_t cur_read_loc = m_read_bytes[m_local_rank].get_value();
     size_t read_bytes = 0;
 
     // Calculate the amount of data available to read
-    size_t available_to_read = cur_tail - cur_head;
+    size_t available_to_read = cur_write_loc - cur_read_loc;
     if (available_to_read == 0) return 0;
     if (available_to_read > max_read) available_to_read = max_read;
 
     // Read data from the shared memory buffer
     while (read_bytes < available_to_read) {
-      size_t cur_index = (cur_head + read_bytes) % m_page_aligned_buffer_size;
+      size_t cur_read_index = (cur_read_loc + read_bytes) % m_page_aligned_buffer_size;
       size_t remaining_bytes = available_to_read - read_bytes;
 
       // Adjust read size if it extends past the end of the buffer
-      if (cur_index + remaining_bytes > m_page_aligned_buffer_size) {
-        remaining_bytes = m_page_aligned_buffer_size - cur_index;
+      if (cur_read_index + remaining_bytes > m_page_aligned_buffer_size) {
+        remaining_bytes = m_page_aligned_buffer_size - cur_read_index;
       }
 
       while (remaining_bytes > 0) {
         size_t cur_read = std::min(remaining_bytes, m_max_read_size);
         // copy into the buffer, offset by partial reads, data is offset by the current index
-        m_panic.push_bytes(m_data[m_local_rank] + cur_index, sizeof(std::byte) * cur_read);
+        m_panic.push_bytes(m_data[m_local_rank] + cur_read_index, sizeof(std::byte) * cur_read);
         read_bytes += cur_read;
-        cur_index += cur_read;
+        cur_read_index += cur_read;
         remaining_bytes -= cur_read;
         // Update the partial read, in the non-circular buffer to reduce atomic calls the reader would
         // only update when the whole msg was read. However, other processes may be waiting to write
