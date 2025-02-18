@@ -568,18 +568,12 @@ inline void wait_for_remote_progress(const int dest, const size_t reserve_start)
   size_t                      m_page_aligned_buffer_size;
   size_t                      m_page_aligned_counter_size;
 
-  // File names
-  shm_filenames               m_filenames;
-
   // these need to be shared, consider if renaming these could increase readability
   atomic_counters*            m_reserved_bytes;         // reserves space in shm
   atomic_counters*            m_written_bytes;          // writer location
   aligned_integer*            m_read_bytes;             // reader location
   std::vector<std::byte*>     m_data;                   // shm region for each rank
 
-  // MPI Info
-  int                         m_local_rank;
-  int                         m_local_size;
 
   // rank local
   ygm::detail::byte_vector    m_panic;
