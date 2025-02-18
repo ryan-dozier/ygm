@@ -17,6 +17,7 @@
 #include <sys/types.h>
 #include <unistd.h>
 #include <vector>
+#include <thread>
 
 #include <ygm/comm.hpp>
 #include <ygm/detail/byte_vector.hpp>
@@ -27,9 +28,9 @@
 namespace ygm {
 namespace shm {
 
-#define CACHELINE 64
-
-static size_t max_msg_size;
+// get the cacheline size, this is needed to offset our atomic counters to not thrash against eachother
+static const size_t cacheline = std::hardware_constructive_interference_size;
+static size_t max_msg_size = -1; // Set to unlimited by default
 
 /** 
  *  @brief 
@@ -60,7 +61,7 @@ public:
       return cnt.fetch_add(n); 
   }
 private:
-  alignas(CACHELINE) std::atomic<size_t> cnt;
+  alignas(cacheline) std::atomic<size_t> cnt;
 };
 
 struct aligned_integer {
@@ -69,7 +70,7 @@ public:
   void store_and_synchronize(const size_t n) { value = n; __sync_synchronize(); }
   void add_and_synchronize(const size_t n) { value += n; __sync_synchronize(); }
 private:
-  alignas(CACHELINE) size_t value = 0;
+  alignas(cacheline) size_t value = 0;
 };
 
 /**
@@ -564,6 +565,7 @@ inline void wait_for_remote_progress(const int dest, const size_t reserve_start)
   int                         m_local_size;
   // File names
   shm_filenames               m_filenames;
+
   // File sizes, and init info
   size_t                      m_page_aligned_buffer_size;
   size_t                      m_page_aligned_counter_size;
@@ -573,7 +575,6 @@ inline void wait_for_remote_progress(const int dest, const size_t reserve_start)
   atomic_counters*            m_written_bytes;          // writer location
   aligned_integer*            m_read_bytes;             // reader location
   std::vector<std::byte*>     m_data;                   // shm region for each rank
-
 
   // rank local
   ygm::detail::byte_vector    m_panic;
