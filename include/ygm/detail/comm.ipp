@@ -11,17 +11,16 @@
 
 namespace ygm {
 
-class comm {
-public:
-  struct mpi_irecv_request {
-    std::shared_ptr<ygm::detail::byte_vector> buffer;
-    MPI_Request request;
-  };
 
-  struct mpi_isend_request {
-    std::shared_ptr<ygm::detail::byte_vector> buffer;
-    MPI_Request request;
-  };
+struct comm::mpi_irecv_request {
+  std::shared_ptr<ygm::detail::byte_vector> buffer;
+  MPI_Request                             request;
+};
+
+struct comm::mpi_isend_request {
+  std::shared_ptr<ygm::detail::byte_vector> buffer;
+  MPI_Request                             request;
+};
 
 struct comm::header_t {
   uint32_t message_size;
@@ -1138,7 +1137,5 @@ inline bool comm::local_process_incoming() {
     }
   }
   return received_to_return;
-}; // class comm
-
-};  // namespace ygm
+}
 };  // namespace ygm
