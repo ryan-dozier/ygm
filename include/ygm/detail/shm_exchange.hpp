@@ -453,9 +453,7 @@ inline void handle_consumer_overlap(const int dest, const std::byte* msg, size_t
  * @param reserve_start The starting index of the reserved space.
  */
 inline void wait_for_remote_progress(const int dest, const size_t reserve_start) {
-  size_t counter = 0;
   while (m_written_bytes[dest].load() != reserve_start) {
-      if(counter++ == 1000000) std::cout << m_local_rank << " " << this->shm_utilized() << " " << dest << " " << shm_utilized_at(dest) << std::endl; 
     // Consume to alleviate deadlock if the buffer is more than 50% full
     if (this->shm_utilized() >= 0.4) {
       shm_receive(m_panic_read_size);
