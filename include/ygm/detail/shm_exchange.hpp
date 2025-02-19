@@ -15,9 +15,9 @@
 #include <sys/mman.h>
 #include <sys/stat.h>
 #include <sys/types.h>
+#include <new>
 #include <unistd.h>
 #include <vector>
-#include <thread>
 
 #include <ygm/comm.hpp>
 #include <ygm/detail/byte_vector.hpp>
@@ -29,7 +29,11 @@ namespace ygm {
 namespace shm {
 
 // get the cacheline size, this is needed to offset our atomic counters to not thrash against eachother
+#if defined(__cpp_lib_hardware_interference_size)
 static const size_t cacheline = std::hardware_constructive_interference_size;
+#else
+static const size_t cacheline = 64; // Fallback to a common cache line size
+#endif
 static size_t max_msg_size = -1; // Set to unlimited by default
 
 /** 
@@ -405,8 +409,15 @@ inline void handle_consumer_overlap(const int dest, const std::byte* msg, size_t
   // prevent deadlock, but make some progress while waiting for other processes.
   size_t read_bytes = m_read_bytes[dest].get_value();
   size_t read_index = read_bytes % m_page_aligned_buffer_size;
-  while (read_bytes < (reserve_start + written_bytes) 
-        && ((cur_index <= read_index) && ((cur_index + cur_msgsize) > read_index))) {
+  // There are two checks that are needed to determine if the consumer's read position falls between the current write
+  // operation. The first check is to ensure the the consumer counter's value is less than the reserved location plus
+  // the number of bytes currently written (i.e. the current write operation index). This check ensures the case that
+  // there are bytes pending to be read by the remote process (the read value could be equal to the write index if there
+  // are no pending writes to be read). The second check looks at if the start of the current write will overlap with
+  // the reader's location. This will only occur if the buffer is full and remote process have written around the ring
+  // buffer.
+  while (read_bytes < (reserve_start + written_bytes) && 
+        ((cur_index <= read_index) && ((cur_index + cur_msgsize) > read_index))) {
     size_t writer_bytes = m_written_bytes[dest].load();
     size_t writer_index = writer_bytes % m_page_aligned_buffer_size;
     // Calculate the available bytes between the writer and the reader
