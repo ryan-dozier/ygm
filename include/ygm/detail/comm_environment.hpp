@@ -90,6 +90,9 @@ class comm_environment {
       if (std::getenv("YGM_COMM_LOCAL_BUFFER_SIZE_KB") == nullptr)
         std::cerr << "YGM_COMM_LOCAL_BUFFER_SIZE_KB not set, using recommended value of" << local_buffer_size << "\n";
     }
+    if (const char* cc = std::getenv("YGM_COMM_SHM_BUFFER_SIZE_KB")) {
+      shm_buffer_size = convert<size_t>(cc) * 1024;
+    }
     if (const char* cc = std::getenv("YGM_COMM_NUM_IRECVS")) {
       num_irecvs = convert<size_t>(cc);
     }
