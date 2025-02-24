@@ -46,23 +46,14 @@ static size_t max_msg_size = -1; // Set to unlimited by default
  */
 struct atomic_counters {
 public:
-  inline size_t load(const std::optional<std::memory_order> o = std::nullopt) const { 
-    if(o)
-      return cnt.load(o.value());
-    else
-      return cnt.load(); 
+  inline size_t load(std::memory_order o = std::memory_order_relaxed) const { 
+    return cnt.load(o);
   }
-  inline void store(const size_t n, const std::optional<std::memory_order> o = std::nullopt) {
-    if(o)
-      cnt.store(n, o.value());
-    else
-      cnt.store(n); 
-}
-  inline size_t fetch_add(const size_t n, const std::optional<std::memory_order> o = std::nullopt) {
-    if(o)
-      return cnt.fetch_add(n, o.value());
-    else
-      return cnt.fetch_add(n); 
+  inline void store(const size_t n, std::memory_order o = std::memory_order_relaxed) {
+    cnt.store(n, o);
+  }
+  inline size_t fetch_add(const size_t n, std::memory_order o = std::memory_order_acq_rel) {
+    return cnt.fetch_add(n, o);
   }
 private:
   alignas(cacheline) std::atomic<size_t> cnt;
@@ -71,8 +62,8 @@ private:
 struct aligned_integer {
 public:
   size_t get_value() const { return value; }
-  void store_and_synchronize(const size_t n) { value = n; __sync_synchronize(); }
-  void add_and_synchronize(const size_t n) { value += n; __sync_synchronize(); }
+  void store_and_synchronize(const size_t n) { value = n; std::atomic_thread_fence(std::memory_order_seq_cst); }
+  void add_and_synchronize(const size_t n) { value += n; std::atomic_thread_fence(std::memory_order_seq_cst); }
 private:
   alignas(cacheline) size_t value = 0;
 };
@@ -258,7 +249,17 @@ public:
   inline size_t size() const { return m_panic.size() + this->shm_size(); }
 
   inline bool bytes_available() const { return (this->size() > 0) ? true : false; }
-   
+
+  /**
+   * @brief Returns true if there are pending messages in the buffer or waiting to be written.
+   */
+  inline bool pending_byes() const { 
+    const size_t reserved_bytes = m_reserved_bytes[m_local_rank].load(std::memory_order_relaxed);
+    const size_t read_bytes = m_read_bytes[m_local_rank].get_value();
+    const size_t pending_bytes = reserved_bytes - read_bytes;
+    const size_t panic_bytes = m_panic.size();
+    return (pending_bytes + panic_bytes) > 0 ? true : false;
+  }
   /**
    * @brief Returns a ratio of the buffer utilization. This function can return over 1.0 (100%+) if
    * the buffer is full, and the panic buffer has been utilized.
@@ -273,9 +274,15 @@ public:
    * @return size_t 
    */
   inline bool can_use_shm(const int dest, const size_t msgsize) {
-    bool can_use = m_layout.is_local(dest) && msgsize <= max_msg_size;
-    if (!can_use) m_stats.shm_skip();
-    return can_use;
+    // only local communcation can use the shm buffer
+    if (!m_layout.is_local(dest)) return false;
+    // check if the msgsize is too large for the shm buffer
+    if (msgsize > max_msg_size) {
+      m_stats.shm_skip();
+      return false;
+    }
+    // safe to use shm buffer
+    return true;
   }
 
   /**
@@ -363,19 +370,19 @@ private:
 
       // Check if the current msg will fit within the buffer
       if (cur_index + cur_msgsize > m_page_aligned_buffer_size) {
-        size_t old_msgsize = cur_msgsize;
         cur_msgsize = m_page_aligned_buffer_size - cur_index;
       } 
       
       // Handle potential overlap with the consumer's read position
-      handle_consumer_overlap(dest, msg, cur_index, cur_msgsize, written_bytes, reserve_start);
+      if (handle_consumer_overlap(dest, msg, cur_index, cur_msgsize, written_bytes, reserve_start))
+        continue;
 
       // copy the bytes that fit into data offset by calculated index
       std::memcpy(m_data[dest] + cur_index, msg + written_bytes, sizeof(std::byte) * cur_msgsize);
       written_bytes += cur_msgsize;
 
     } while (written_bytes != msgsize);
-    __sync_synchronize();
+    std::atomic_thread_fence(std::memory_order_seq_cst);
 
     // Ensure other process make progress before updating the written size
     wait_for_remote_progress(dest, reserve_start);
@@ -401,7 +408,7 @@ private:
  * @param written_bytes The number of bytes written so far.
  * @param reserve_start The starting index of the reserved space.
  */
-inline void handle_consumer_overlap(const int dest, const std::byte* msg, size_t& cur_index, size_t& cur_msgsize, size_t& written_bytes, const size_t reserve_start) {
+inline bool handle_consumer_overlap(const int dest, const std::byte* msg, size_t& cur_index, size_t& cur_msgsize, size_t& written_bytes, const size_t reserve_start) {
   // Check if the consumer's read position falls between the current write index and index of the pending next write.
   // If it does, we need to wait for the consumer to make progress before writing to the buffer.
   // This is done to prevent the writer from overwriting data that the consumer has not yet read.
@@ -416,10 +423,9 @@ inline void handle_consumer_overlap(const int dest, const std::byte* msg, size_t
   // are no pending writes to be read). The second check looks at if the start of the current write will overlap with
   // the reader's location. This will only occur if the buffer is full and remote process have written around the ring
   // buffer.
-  while (read_bytes < (reserve_start + written_bytes) && 
-        ((cur_index <= read_index) && ((cur_index + cur_msgsize) > read_index))) {
-    size_t writer_bytes = m_written_bytes[dest].load();
-    size_t writer_index = writer_bytes % m_page_aligned_buffer_size;
+  bool overlap = false;
+  while (read_bytes < reserve_start && (cur_index <= read_index && (cur_index + cur_msgsize) > read_index)) {
+    overlap = true;
     // Calculate the available bytes between the writer and the reader
     size_t cur_avail = read_index - cur_index;
     if (cur_avail > 0) {
@@ -429,13 +435,14 @@ inline void handle_consumer_overlap(const int dest, const std::byte* msg, size_t
       written_bytes += cur_avail;
       cur_msgsize -= cur_avail;
       cur_index = (reserve_start + written_bytes) % m_page_aligned_buffer_size;
+      YGM_ASSERT_RELEASE(cur_msgsize >= 0);
     } else {
       // Consume to alleviate deadlock if the buffer is more than 50% full
       // TODO: Make a deadlock prone test case to see if this value should be tuneable, an idea for this 
       // could be that each round of iteration we increase the % threshold to do a panic read.
       if (this->shm_utilized() >= 0.4) {
-          shm_receive(m_panic_read_size);
-          m_stats.shm_panic();
+        shm_receive(m_panic_read_size);
+        m_stats.shm_panic();
       }
     }
     m_bh.backoff();
@@ -444,6 +451,7 @@ inline void handle_consumer_overlap(const int dest, const std::byte* msg, size_t
     read_index = read_bytes % m_page_aligned_buffer_size;
   }
   m_bh.reset();
+  return overlap;
 }
 
 /**
@@ -478,7 +486,6 @@ inline void wait_for_remote_progress(const int dest, const size_t reserve_start)
     // The only process which updates the readbytes is the rank owning the buffer.
     size_t cur_write_loc = m_written_bytes[m_local_rank].load(std::memory_order_relaxed);
     size_t cur_read_loc = m_read_bytes[m_local_rank].get_value();
-    size_t read_bytes = 0;
 
     // Calculate the amount of data available to read
     size_t available_to_read = cur_write_loc - cur_read_loc;
@@ -486,6 +493,7 @@ inline void wait_for_remote_progress(const int dest, const size_t reserve_start)
     if (available_to_read > max_read) available_to_read = max_read;
 
     // Read data from the shared memory buffer
+    size_t read_bytes = 0;
     while (read_bytes < available_to_read) {
       size_t cur_read_index = (cur_read_loc + read_bytes) % m_page_aligned_buffer_size;
       size_t remaining_bytes = available_to_read - read_bytes;
@@ -507,7 +515,9 @@ inline void wait_for_remote_progress(const int dest, const size_t reserve_start)
         // into the region this is currently consuming from.
         m_read_bytes[m_local_rank].add_and_synchronize(cur_read);
       }
+      YGM_ASSERT_RELEASE(remaining_bytes == 0);
     }
+    YGM_ASSERT_RELEASE(read_bytes == available_to_read);
     return available_to_read;
   }
  
