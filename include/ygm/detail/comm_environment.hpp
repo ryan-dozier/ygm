@@ -90,6 +90,7 @@ class comm_environment {
       if (std::getenv("YGM_COMM_LOCAL_BUFFER_SIZE_KB") == nullptr)
         std::cerr << "YGM_COMM_LOCAL_BUFFER_SIZE_KB not set, using recommended value of" << local_buffer_size << "\n";
     }
+    shm_buffer_size = round_to_nearest_kb((float) local_buffer_size * 10);
     if (const char* cc = std::getenv("YGM_COMM_SHM_BUFFER_SIZE_KB")) {
       shm_buffer_size = convert<size_t>(cc) * 1024;
     }
@@ -158,7 +159,7 @@ class comm_environment {
   size_t freq_issend               = 8;
   size_t send_buffer_free_list_len = 32;
 
-  size_t shm_buffer_size = 16 * 1024 * 1024;
+  size_t shm_buffer_size;
   size_t shm_panic_read_size = 1024;
   size_t shm_max_buffer_read = -1;
 
