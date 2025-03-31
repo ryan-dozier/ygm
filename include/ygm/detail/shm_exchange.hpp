@@ -474,11 +474,11 @@ inline void wait_for_remote_progress(const int dest, const size_t reserve_start)
     if (this->shm_utilized() >= 0.4) {
       shm_receive(m_panic_read_size);
       m_stats.shm_panic();
-    } else {
-      m_bh.backoff();
-    }
+    } //else {
+      //m_bh.backoff();
+    //}
   }
-  m_bh.reset();
+  //m_bh.reset();
 }
 
 /**
