@@ -127,6 +127,8 @@ inline void comm::stats_print(const std::string &name, std::ostream &os) {
        << "SHM_RECV_BYTES           = " << all_reduce_sum(stats.get_shm_receive_bytes()) << "\n"
        << "SHM_PANIC_COUNT          = " << all_reduce_sum(stats.get_shm_panic_used()) << "\n"
        << "SHM_SKIP_COUNT           = " << all_reduce_sum(stats.get_shm_skipped()) << "\n"
+       << "SHM_WAIT_TIME_SUM        = " << all_reduce_sum(stats.get_shm_time_waiting()) << "\n"
+       << "SHM_WAIT_TIME_MAX        = " << all_reduce_max(stats.get_shm_time_waiting()) << "\n"
        << "======================================";
 
   if (rank0()) {

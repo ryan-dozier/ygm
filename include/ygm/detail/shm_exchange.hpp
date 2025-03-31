@@ -19,6 +19,8 @@
 #include <unistd.h>
 #include <vector>
 
+#include <chrono>
+
 #include <ygm/comm.hpp>
 #include <ygm/detail/byte_vector.hpp>
 #include <ygm/detail/comm_environment.hpp>
@@ -385,7 +387,11 @@ private:
     } while (written_bytes != msgsize);
 
     // Ensure other process make progress before updating the written size
+    auto start = std::chrono::high_resolution_clock::now();
     wait_for_remote_progress(dest, reserve_start);
+    auto end = std::chrono::high_resolution_clock::now();
+    m_stats.shm_wait(std::chrono::duration_cast<std::chrono::seconds>(end - start).count());
+    
 
     // increment the written size, the write becomes visable to other processes here
     m_written_bytes[dest].fetch_add(msgsize);

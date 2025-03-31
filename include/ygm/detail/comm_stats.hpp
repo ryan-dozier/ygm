@@ -37,6 +37,7 @@ class comm_stats {
 
   void shm_panic() { m_shm_panic_used += 1; }
   void shm_skip() { m_shm_skipped += 1; }
+  void shm_wait(double time) { shm_time_waiting += time; }
 
   void isend(int dest, size_t bytes) {
     m_isend_count += 1;
@@ -104,6 +105,7 @@ class comm_stats {
   size_t get_shm_receive_bytes() const { return m_shm_receive_bytes; }
   size_t get_shm_panic_used() const { return m_shm_panic_used; }
   size_t get_shm_skipped() const { return m_shm_skipped; }
+  double get_shm_time_waiting() const { return shm_time_waiting; }
 
   size_t get_isend_count() const { return m_isend_count; }
   size_t get_isend_bytes() const { return m_isend_bytes; }
@@ -141,6 +143,7 @@ class comm_stats {
   size_t m_shm_receive_bytes = 0;
   size_t m_shm_panic_used = 0;
   size_t m_shm_skipped = 0;
+  double shm_time_waiting = 0.0;
 
   size_t m_isend_count      = 0;
   size_t m_isend_bytes      = 0;
