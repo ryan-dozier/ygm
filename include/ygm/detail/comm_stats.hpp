@@ -81,6 +81,7 @@ class comm_stats {
     m_shm_receive_bytes          = 0;
     m_shm_skipped                = 0;
     m_shm_panic_used             = 0;
+    shm_wait_microseconds        = 0;
     m_isend_count                = 0;
     m_isend_bytes                = 0;
     m_isend_test_count           = 0;
