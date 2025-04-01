@@ -390,7 +390,7 @@ private:
     auto start = std::chrono::high_resolution_clock::now();
     wait_for_remote_progress(dest, reserve_start);
     auto end = std::chrono::high_resolution_clock::now();
-    m_stats.shm_wait(std::chrono::duration_cast<std::chrono::seconds>(end - start).count());
+    m_stats.shm_wait(std::chrono::duration_cast<std::chrono::microseconds>(end - start).count());
     
 
     // increment the written size, the write becomes visable to other processes here
