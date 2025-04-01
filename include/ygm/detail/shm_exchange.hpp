@@ -390,7 +390,7 @@ private:
     auto start = std::chrono::high_resolution_clock::now();
     wait_for_remote_progress(dest, reserve_start);
     auto end = std::chrono::high_resolution_clock::now();
-    m_stats.shm_wait(std::chrono::duration_cast<std::chrono::seconds>(end - start).count());
+    m_stats.shm_wait(std::chrono::duration_cast<std::chrono::microseconds>(end - start).count());
     
 
     // increment the written size, the write becomes visable to other processes here
@@ -474,9 +474,9 @@ inline void wait_for_remote_progress(const int dest, const size_t reserve_start)
     if (this->shm_utilized() >= 0.4) {
       shm_receive(m_panic_read_size);
       m_stats.shm_panic();
-    } //else {
-      //m_bh.backoff();
-    //}
+    } /*else {
+      m_bh.backoff();
+    }*/
   }
   //m_bh.reset();
 }
