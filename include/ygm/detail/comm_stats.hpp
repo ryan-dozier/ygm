@@ -109,7 +109,7 @@ class comm_stats {
   size_t get_shm_panic_used() const { return m_shm_panic_used; }
   size_t get_shm_skipped() const { return m_shm_skipped; }
   double get_shm_time_waiting() const { return static_cast<double>(m_shm_wait_microseconds) / 1000000.0; }
-  double get_shm_time_memcpy() const { return static_cast<double>(m_shm_wait_memcpy_microseconds) / 1000000.0; }
+  double get_shm_memcpy_time() const { return static_cast<double>(m_shm_wait_memcpy_microseconds) / 1000000.0; }
 
   size_t get_isend_count() const { return m_isend_count; }
   size_t get_isend_bytes() const { return m_isend_bytes; }

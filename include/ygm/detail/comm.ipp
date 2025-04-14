@@ -129,6 +129,8 @@ inline void comm::stats_print(const std::string &name, std::ostream &os) {
        << "SHM_SKIP_COUNT           = " << all_reduce_sum(stats.get_shm_skipped()) << "\n"
        << "SHM_WAIT_TIME_SUM        = " << all_reduce_sum(stats.get_shm_time_waiting()) << "\n"
        << "SHM_WAIT_TIME_MAX        = " << all_reduce_max(stats.get_shm_time_waiting()) << "\n"
+       << "SHM_MEMCPY_TIME_SUM      = " << all_reduce_sum(stats.get_shm_memcpy_time()) << "\n"
+       << "SHM_MEMCPY_TIME_MAX      = " << all_reduce_max(stats.get_shm_memcpy_time()) << "\n"
        << "======================================";
 
   if (rank0()) {
