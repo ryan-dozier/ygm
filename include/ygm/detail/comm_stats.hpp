@@ -37,7 +37,8 @@ class comm_stats {
 
   void shm_panic() { m_shm_panic_used += 1; }
   void shm_skip() { m_shm_skipped += 1; }
-  void shm_wait(size_t time) { shm_wait_microseconds += time; }
+  void shm_wait(size_t time) { m_shm_wait_microseconds += time; }
+  void shm_memcpy(size_t time) { m_shm_wait_memcpy_microseconds += time; }
 
   void isend(int dest, size_t bytes) {
     m_isend_count += 1;
@@ -81,7 +82,8 @@ class comm_stats {
     m_shm_receive_bytes          = 0;
     m_shm_skipped                = 0;
     m_shm_panic_used             = 0;
-    shm_wait_microseconds        = 0;
+    m_shm_wait_microseconds        = 0;
+    m_shm_wait_memcpy_microseconds = 0;
     m_isend_count                = 0;
     m_isend_bytes                = 0;
     m_isend_test_count           = 0;
@@ -106,7 +108,8 @@ class comm_stats {
   size_t get_shm_receive_bytes() const { return m_shm_receive_bytes; }
   size_t get_shm_panic_used() const { return m_shm_panic_used; }
   size_t get_shm_skipped() const { return m_shm_skipped; }
-  double get_shm_time_waiting() const { return static_cast<double>(shm_wait_microseconds) / 1000000.0; }
+  double get_shm_time_waiting() const { return static_cast<double>(m_shm_wait_microseconds) / 1000000.0; }
+  double get_shm_time_memcpy() const { return static_cast<double>(m_shm_wait_memcpy_microseconds) / 1000000.0; }
 
   size_t get_isend_count() const { return m_isend_count; }
   size_t get_isend_bytes() const { return m_isend_bytes; }
@@ -144,7 +147,8 @@ class comm_stats {
   size_t m_shm_receive_bytes = 0;
   size_t m_shm_panic_used = 0;
   size_t m_shm_skipped = 0;
-  size_t shm_wait_microseconds = 0.0;
+  size_t m_shm_wait_microseconds = 0;
+  size_t m_shm_wait_memcpy_microseconds = 0;
 
   size_t m_isend_count      = 0;
   size_t m_isend_bytes      = 0;

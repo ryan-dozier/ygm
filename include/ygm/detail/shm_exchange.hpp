@@ -362,7 +362,7 @@ private:
     // Grab the current reserved index and increment by the msgsize
     size_t reserve_start = m_reserved_bytes[dest].fetch_add(msgsize);
     size_t written_bytes = 0;
-
+    auto start = std::chrono::steady_clock::now();
     do {
       // From the full index grab the buffer id, and the index within the current logical buffer
       size_t cur_index = (reserve_start + written_bytes) % m_page_aligned_buffer_size;
@@ -385,11 +385,13 @@ private:
       written_bytes += cur_msgsize;
 
     } while (written_bytes != msgsize);
+    auto end = std::chrono::steady_clock::now();
+    m_stats.shm_memcpy(std::chrono::duration_cast<std::chrono::microseconds>(end - start).count());
 
     // Ensure other process make progress before updating the written size
-    auto start = std::chrono::high_resolution_clock::now();
+    start = std::chrono::steady_clock::now();
     wait_for_remote_progress(dest, reserve_start);
-    auto end = std::chrono::high_resolution_clock::now();
+    end = std::chrono::steady_clock::now();
     m_stats.shm_wait(std::chrono::duration_cast<std::chrono::microseconds>(end - start).count());
     
 
@@ -499,6 +501,7 @@ inline void wait_for_remote_progress(const int dest, const size_t reserve_start)
     size_t available_to_read = cur_write_loc - cur_read_loc;
     if (available_to_read == 0) return 0;
     if (available_to_read > max_read) available_to_read = max_read;
+    auto start = std::chrono::steady_clock::now();
 
     // Read data from the shared memory buffer
     size_t read_bytes = 0;
@@ -525,6 +528,8 @@ inline void wait_for_remote_progress(const int dest, const size_t reserve_start)
       }
       YGM_ASSERT_RELEASE(remaining_bytes == 0);
     }
+    auto end = std::chrono::steady_clock::now();
+    m_stats.shm_memcpy(std::chrono::duration_cast<std::chrono::microseconds>(end - start).count());
     YGM_ASSERT_RELEASE(read_bytes == available_to_read);
     return available_to_read;
   }
