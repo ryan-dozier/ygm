@@ -196,8 +196,8 @@ private:
     m_written_bytes = open_new_shm_region<atomic_counters>(m_filenames.m_written_fname.c_str(), m_page_aligned_counter_size);
     m_written_bytes[m_local_rank].store(0);
 
-    m_read_bytes = open_new_shm_region<aligned_integer>(m_filenames.m_read_fname.c_str(), m_page_aligned_counter_size);
-    m_read_bytes[m_local_rank].store_and_synchronize(0);
+    m_read_bytes = open_new_shm_region<atomic_counters>(m_filenames.m_read_fname.c_str(), m_page_aligned_counter_size);
+    m_read_bytes[m_local_rank].store(0);
   }
 
   /**
@@ -257,7 +257,7 @@ public:
    */
   inline bool pending_byes() const { 
     const size_t reserved_bytes = m_reserved_bytes[m_local_rank].load(std::memory_order_relaxed);
-    const size_t read_bytes = m_read_bytes[m_local_rank].get_value();
+    const size_t read_bytes = m_read_bytes[m_local_rank].load(std::memory_order_relaxed);
     const size_t pending_bytes = reserved_bytes - read_bytes;
     const size_t panic_bytes = m_panic.size();
     return (pending_bytes + panic_bytes) > 0 ? true : false;
@@ -339,7 +339,7 @@ private:
    */
   inline size_t shm_size() const {
     const size_t written_bytes = m_written_bytes[m_local_rank].load(std::memory_order_relaxed);
-    const size_t read_bytes = m_read_bytes[m_local_rank].get_value();
+    const size_t read_bytes = m_read_bytes[m_local_rank].load(std::memory_order_relaxed);
     return written_bytes - read_bytes;
   }
 
@@ -347,7 +347,7 @@ private:
   
   inline double shm_utilized_at(size_t dest) const { 
     const size_t written_bytes = m_written_bytes[dest].load(std::memory_order_relaxed);
-    const size_t read_bytes = m_read_bytes[dest].get_value();
+    const size_t read_bytes = m_read_bytes[dest].load(std::memory_order_relaxed);
     return static_cast<double>(written_bytes - read_bytes) / m_page_aligned_buffer_size; 
   }
 
@@ -422,7 +422,7 @@ inline bool handle_consumer_overlap(const int dest, const std::byte* msg, size_t
   // This is done to prevent the writer from overwriting data that the consumer has not yet read.
   // In the mean time, we can copy data from our current read buffer into the panic buffer to not only
   // prevent deadlock, but make some progress while waiting for other processes.
-  size_t read_bytes = m_read_bytes[dest].get_value();
+  size_t read_bytes = m_read_bytes[dest].load(std::memory_order_relaxed);
   size_t read_index = read_bytes % m_page_aligned_buffer_size;
   // There are two checks that are needed to determine if the consumer's read position falls between the current write
   // operation. The first check is to ensure the the consumer counter's value is less than the reserved location plus
@@ -457,7 +457,7 @@ inline bool handle_consumer_overlap(const int dest, const std::byte* msg, size_t
     }
     m_bh.backoff();
     // get the current read position (updated by another process)
-    read_bytes = m_read_bytes[dest].get_value();
+    read_bytes = m_read_bytes[dest].load(std::memory_order_relaxed);
     read_index = read_bytes % m_page_aligned_buffer_size;
   }
   m_bh.reset();
@@ -495,7 +495,7 @@ inline void wait_for_remote_progress(const int dest, const size_t reserve_start)
     // The writtenbytes.load() is our linearization point for reading.
     // The only process which updates the readbytes is the rank owning the buffer.
     size_t cur_write_loc = m_written_bytes[m_local_rank].load(std::memory_order_relaxed);
-    size_t cur_read_loc = m_read_bytes[m_local_rank].get_value();
+    size_t cur_read_loc = m_read_bytes[m_local_rank].load(std::memory_order_relaxed);
 
     // Calculate the amount of data available to read
     size_t available_to_read = cur_write_loc - cur_read_loc;
@@ -524,7 +524,7 @@ inline void wait_for_remote_progress(const int dest, const size_t reserve_start)
         // Update the partial read, in the non-circular buffer to reduce atomic calls the reader would
         // only update when the whole msg was read. However, other processes may be waiting to write
         // into the region this is currently consuming from.
-        m_read_bytes[m_local_rank].add_and_synchronize(cur_read);
+        m_read_bytes[m_local_rank].fetch_add(cur_read);
       }
       YGM_ASSERT_RELEASE(remaining_bytes == 0);
     }
@@ -605,7 +605,7 @@ inline void wait_for_remote_progress(const int dest, const size_t reserve_start)
   // these need to be shared, consider if renaming these could increase readability
   atomic_counters*            m_reserved_bytes;         // reserves space in shm
   atomic_counters*            m_written_bytes;          // writer location
-  aligned_integer*            m_read_bytes;             // reader location
+  atomic_counters*            m_read_bytes;             // reader location
   std::vector<std::byte*>     m_data;                   // shm region for each rank
 
   // rank local
