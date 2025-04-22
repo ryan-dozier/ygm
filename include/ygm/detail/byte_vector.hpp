@@ -106,7 +106,7 @@ public:
       return;
     }
     // if max osx handler
-    #if __APPLE__
+    //#if __APPLE__
       pointer temp = (pointer) mmap(NULL, new_capacity, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, 0, 0);
       if (temp == MAP_FAILED) {
         throw std::runtime_error("mmap failed" + std::string(strerror(errno)));
@@ -114,12 +114,12 @@ public:
       memcpy(temp, m_data, m_size);
       munmap(m_data, m_capacity);
       m_data = temp;
-    #else
+    /*#else
       m_data = (pointer) mremap(m_data, m_capacity, new_capacity, MREMAP_MAYMOVE);
       if(m_data == MAP_FAILED) { 
         throw std::runtime_error("mremap failed to resize byte_vector:" + std::string(strerror(errno)));
       }
-    #endif
+    #endif*/
     m_capacity = new_capacity;
   } 
 
