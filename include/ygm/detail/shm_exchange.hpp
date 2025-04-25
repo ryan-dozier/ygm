@@ -378,10 +378,8 @@ private:
         continue;
 
       // copy the bytes that fit into data offset by calculated index
-      std::memcpy(m_data[dest] + cur_index, msg + written_bytes, sizeof(std::byte) * cur_msgsize);
-      std::atomic_thread_fence(std::memory_order_seq_cst);
+      fenced_memcpy(m_data[dest] + cur_index, msg + written_bytes, sizeof(std::byte) * cur_msgsize);
       written_bytes += cur_msgsize;
-
     } while (written_bytes != msgsize);
 
     // Ensure other process make progress before updating the written size
@@ -430,9 +428,7 @@ inline bool handle_consumer_overlap(const int dest, const std::byte* msg, size_t
     size_t cur_avail = read_index - cur_index;
     if (cur_avail > 0) {
       // Copy data in the buffer up to the remote reader's location
-      std::memcpy(m_data[dest] + cur_index, msg + written_bytes, sizeof(std::byte) * cur_avail);
-      std::atomic_thread_fence(std::memory_order_seq_cst);
-      
+      fenced_memcpy(m_data[dest] + cur_index, msg + written_bytes, sizeof(std::byte) * cur_avail);
       // Update to reflect the partial write
       written_bytes += cur_avail;
       cur_msgsize -= cur_avail;
@@ -473,6 +469,12 @@ inline void wait_for_remote_progress(const int dest, const size_t reserve_start)
     }
   }
   m_bh.reset();
+}
+
+void fenced_memcpy(void* dest, const std::byte* msg, const size_t msgsize) {
+  std::atomic_thread_fence(std::memory_order_acquire);
+  std::memcpy(dest, msg, sizeof(std::byte) * msgsize);
+  std::atomic_thread_fence(std::memory_order_release);
 }
 
 /**
