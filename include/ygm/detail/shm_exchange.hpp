@@ -250,6 +250,9 @@ public:
 
   inline bool bytes_available() const { return (this->size() > 0) ? true : false; }
 
+  inline void completed_processing() { m_in_use = false; }
+  inline bool in_use() const { return m_in_use; }
+
   /**
    * @brief Returns true if there are pending messages in the buffer or waiting to be written.
    */
@@ -317,6 +320,7 @@ public:
    * @return size_t bytes actaully read into the buffer
    */
   inline size_t receive(std::shared_ptr<ygm::detail::byte_vector>& buffer) {
+    if(m_in_use) { std::cout << "shm_receive re-entry" << std::endl; return 0; }
     size_t receive_amount = this->size();
     if (receive_amount > 0) {
       shm_receive(receive_amount - m_panic.size());
@@ -326,6 +330,7 @@ public:
       YGM_ASSERT_RELEASE(buffer->size() == receive_amount);
       m_stats.shm_receive(m_local_rank, receive_amount);
     }
+    m_in_use = true;
     return receive_amount;
   }
 
@@ -342,7 +347,7 @@ private:
   }
 
   inline double shm_utilized() const { return static_cast<double>(this->shm_size()) / m_page_aligned_buffer_size; }
-  
+
   inline double shm_utilized_at(size_t dest) const { 
     const size_t written_bytes = m_written_bytes[dest].load(std::memory_order_relaxed);
     const size_t read_bytes = m_read_bytes[dest].get_value();
@@ -372,7 +377,7 @@ private:
       if (cur_index + cur_msgsize > m_page_aligned_buffer_size) {
         cur_msgsize = m_page_aligned_buffer_size - cur_index;
       } 
-      
+
       // Handle potential overlap with the consumer's read position
       if (handle_consumer_overlap(dest, msg, cur_index, cur_msgsize, written_bytes, reserve_start))
         continue;
@@ -381,6 +386,7 @@ private:
       fenced_memcpy(m_data[dest] + cur_index, msg + written_bytes, sizeof(std::byte) * cur_msgsize);
       written_bytes += cur_msgsize;
     } while (written_bytes != msgsize);
+    YGM_ASSERT_RELEASE(written_bytes == msgsize);
 
     // Ensure other process make progress before updating the written size
     wait_for_remote_progress(dest, reserve_start);
@@ -524,7 +530,7 @@ void fenced_memcpy(void* dest, const std::byte* msg, const size_t msgsize) {
     YGM_ASSERT_RELEASE(read_bytes == available_to_read);
     return available_to_read;
   }
- 
+
   /**
    * @brief Opens a shm region with a given filename and size then memory maps onto it. opens with
    * the O_EXL tag. Safe for multiple processes to call on the same filename.
@@ -607,6 +613,7 @@ void fenced_memcpy(void* dest, const std::byte* msg, const size_t msgsize) {
   // backoff function, need to run tests with and without it.
   backoff_helper              m_bh;
   // YGM Info/ stat reporting
+  bool                        m_in_use = false;
   detail::comm_stats&         m_stats;
   const ygm::detail::layout&  m_layout;
 };  // class shm_exchange

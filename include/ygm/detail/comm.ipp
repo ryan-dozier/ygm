@@ -574,7 +574,7 @@ inline void comm::flush_send_buffer(int dest) {
       request.buffer->clear();
       m_free_send_buffers.push_back(request.buffer);
     // Use MPI
-    } else {                                                            
+    } else {
       if (config.freq_issend > 0 && counter++ % config.freq_issend == 0) {
         YGM_ASSERT_MPI(MPI_Issend(request.buffer->data(), request.buffer->size(),
                               MPI_BYTE, dest, 0, m_comm_async,
@@ -977,6 +977,7 @@ inline void comm::handle_next_shm_receive(std::shared_ptr<ygm::detail::byte_vect
                                     const size_t buffer_size) { 
   handle_next_receive_helper(buffer, buffer_size);
   buffer->clear();
+  m_shm_exchange.completed_processing();
   flush_to_capacity();
 }
 
