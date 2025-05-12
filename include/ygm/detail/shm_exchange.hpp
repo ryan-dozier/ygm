@@ -248,7 +248,13 @@ public:
 
   inline size_t size() const { return m_panic.size() + this->shm_size(); }
 
-  inline bool bytes_available() const { return (this->size() > 0) ? true : false; }
+  // similar to the size function, but only returns the size if there are no outstanding bytes to process by the comm
+  inline size_t bytes_available_for_read() const {
+    if(m_in_use) 
+      return 0;
+    else 
+      return this->size(); 
+  }
 
   inline void completed_processing() { m_in_use = false; }
   inline bool in_use() const { return m_in_use; }
@@ -319,8 +325,15 @@ public:
    * @param buffer_size size of the contiguous storage
    * @return size_t bytes actaully read into the buffer
    */
+  bool has_printed = false;
   inline size_t receive(std::shared_ptr<ygm::detail::byte_vector>& buffer) {
-    if(m_in_use) { std::cout << "shm_receive re-entry" << std::endl; return 0; }
+    if(m_in_use) {
+      if(!has_printed) {
+        std::cout << "shm_receive re-entry" << std::endl; 
+        has_printed = true;
+      }
+      return 0; 
+    }
     size_t receive_amount = this->size();
     if (receive_amount > 0) {
       shm_receive(receive_amount - m_panic.size());
@@ -477,10 +490,15 @@ inline void wait_for_remote_progress(const int dest, const size_t reserve_start)
   m_bh.reset();
 }
 
-void fenced_memcpy(void* dest, const std::byte* msg, const size_t msgsize) {
+/*void fenced_memcpy(void* dest, const std::byte* msg, const size_t msgsize) {
   std::atomic_thread_fence(std::memory_order_acquire);
   std::memcpy(dest, msg, sizeof(std::byte) * msgsize);
   std::atomic_thread_fence(std::memory_order_release);
+}*/
+
+void fenced_memcpy(void* dest, const std::byte* msg, const size_t msgsize) {
+  std::memcpy(dest, msg, sizeof(std::byte) * msgsize);
+  std::atomic_thread_fence(std::memory_order_seq_cst);
 }
 
 /**
