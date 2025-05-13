@@ -142,6 +142,7 @@ public:
    */
 private:
   void build_shm_exchange(size_t global_shm_size) {
+    m_in_use = false;
     initialize_filenames();
     initialize_page_aligned_sizes(global_shm_size / m_local_size);
     initialize_atomic_counters();
@@ -327,13 +328,7 @@ public:
    */
   bool has_printed = false;
   inline size_t receive(std::shared_ptr<ygm::detail::byte_vector>& buffer) {
-    if(m_in_use) {
-      if(!has_printed) {
-        std::cout << "shm_receive re-entry" << std::endl; 
-        has_printed = true;
-      }
-      return 0; 
-    }
+    if(m_in_use) { return 0; }
     size_t receive_amount = this->size();
     if (receive_amount > 0) {
       shm_receive(receive_amount - m_panic.size());
@@ -342,8 +337,8 @@ public:
       YGM_ASSERT_RELEASE(m_panic.size() == 0);
       YGM_ASSERT_RELEASE(buffer->size() == receive_amount);
       m_stats.shm_receive(m_local_rank, receive_amount);
+      m_in_use = true; // mark the outgoing buffer as in use
     }
-    m_in_use = true;
     return receive_amount;
   }
 
