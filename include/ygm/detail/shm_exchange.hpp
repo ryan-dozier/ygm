@@ -46,15 +46,9 @@ static size_t max_msg_size = -1; // Set to unlimited by default
  */
 struct atomic_counters {
 public:
-  inline size_t load(std::memory_order o = std::memory_order_relaxed) const { 
-    return cnt.load(o);
-  }
-  inline void store(const size_t n, std::memory_order o = std::memory_order_relaxed) {
-    cnt.store(n, o);
-  }
-  inline size_t fetch_add(const size_t n, std::memory_order o = std::memory_order_acq_rel) {
-    return cnt.fetch_add(n, o);
-  }
+  inline size_t load(std::memory_order o = std::memory_order_relaxed) const { return cnt.load(o); }
+  inline void store(const size_t n, std::memory_order o = std::memory_order_relaxed) { cnt.store(n, o); }
+  inline size_t fetch_add(const size_t n, std::memory_order o = std::memory_order_acq_rel) { return cnt.fetch_add(n, o); }
 private:
   alignas(cacheline) std::atomic<size_t> cnt;
 };
@@ -324,7 +318,7 @@ public:
    * 
    * @param buffer contiguous storage to read from the shm region
    * @param buffer_size size of the contiguous storage
-   * @return size_t bytes actaully read into the buffer
+   * @return size_t bytes actually read into the buffer
    */
   bool has_printed = false;
   inline size_t receive(std::shared_ptr<ygm::detail::byte_vector>& buffer) {
@@ -387,12 +381,11 @@ private:
       } 
 
       // Handle potential overlap with the consumer's read position
-      if (handle_consumer_overlap(dest, msg, cur_index, cur_msgsize, written_bytes, reserve_start))
-        continue;
-
-      // copy the bytes that fit into data offset by calculated index
-      fenced_memcpy(m_data[dest] + cur_index, msg + written_bytes, sizeof(std::byte) * cur_msgsize);
-      written_bytes += cur_msgsize;
+      if (!handle_consumer_overlap(dest, msg, cur_index, cur_msgsize, written_bytes, reserve_start)) {
+        // copy the bytes that fit into data offset by calculated index
+        fenced_memcpy(m_data[dest] + cur_index, msg + written_bytes, sizeof(std::byte) * cur_msgsize);
+        written_bytes += cur_msgsize;
+      }
     } while (written_bytes != msgsize);
     YGM_ASSERT_RELEASE(written_bytes == msgsize);
 
@@ -403,98 +396,98 @@ private:
     m_written_bytes[dest].fetch_add(msgsize);
   }
 
-/**
- * @brief Handles potential overlap with the consumer's read position.
- * When re-using buffers, there is a chance that the write operation might overlap with locations
- * that the consumer has already read. To prevent this, we need to wait until the consumer makes
- * enough progress to allow writing to the buffer.
- * 
- * This function checks if the write operation would cross the consumer's current read position
- * in the circular buffer. For example, the reader could be at index 0 while the writer is at index 64,
- * and it would still be safe to write. This is handled by checking if the consumer's read position
- * falls between the current write index and the index after the partial write.
- *
- * @param dest The destination index in the shared memory region.
- * @param cur_index The current index in the buffer.
- * @param cur_msgsize The current message size.
- * @param written_bytes The number of bytes written so far.
- * @param reserve_start The starting index of the reserved space.
- */
-inline bool handle_consumer_overlap(const int dest, const std::byte* msg, size_t& cur_index, size_t& cur_msgsize, size_t& written_bytes, const size_t reserve_start) {
-  // Check if the consumer's read position falls between the current write index and index of the pending next write.
-  // If it does, we need to wait for the consumer to make progress before writing to the buffer.
-  // This is done to prevent the writer from overwriting data that the consumer has not yet read.
-  // In the mean time, we can copy data from our current read buffer into the panic buffer to not only
-  // prevent deadlock, but make some progress while waiting for other processes.
-  size_t read_bytes = m_read_bytes[dest].get_value();
-  size_t read_index = read_bytes % m_page_aligned_buffer_size;
-  // There are two checks that are needed to determine if the consumer's read position falls between the current write
-  // operation. The first check is to ensure the the consumer counter's value is less than the reserved location plus
-  // the number of bytes currently written (i.e. the current write operation index). This check ensures the case that
-  // there are bytes pending to be read by the remote process (the read value could be equal to the write index if there
-  // are no pending writes to be read). The second check looks at if the start of the current write will overlap with
-  // the reader's location. This will only occur if the buffer is full and remote process have written around the ring
-  // buffer.
-  bool overlap = false;
-  while (read_bytes < reserve_start && (cur_index <= read_index && (cur_index + cur_msgsize) > read_index)) {
-    overlap = true;
-    // Calculate the available bytes between the writer and the reader
-    size_t cur_avail = read_index - cur_index;
-    if (cur_avail > 0) {
-      // Copy data in the buffer up to the remote reader's location
-      fenced_memcpy(m_data[dest] + cur_index, msg + written_bytes, sizeof(std::byte) * cur_avail);
-      // Update to reflect the partial write
-      written_bytes += cur_avail;
-      cur_msgsize -= cur_avail;
-      cur_index = (reserve_start + written_bytes) % m_page_aligned_buffer_size;
-      YGM_ASSERT_RELEASE(cur_msgsize >= 0);
-    } else {
+  /**
+   * @brief Handles potential overlap with the consumer's read position.
+   * When re-using buffers, there is a chance that the write operation might overlap with locations
+   * that the consumer has already read. To prevent this, we need to wait until the consumer makes
+   * enough progress to allow writing to the buffer.
+   * 
+   * This function checks if the write operation would cross the consumer's current read position
+   * in the circular buffer. For example, the reader could be at index 0 while the writer is at index 64,
+   * and it would still be safe to write. This is handled by checking if the consumer's read position
+   * falls between the current write index and the index after the partial write.
+   *
+   * @param dest The destination index in the shared memory region.
+   * @param cur_index The current index in the buffer.
+   * @param cur_msgsize The current message size.
+   * @param written_bytes The number of bytes written so far.
+   * @param reserve_start The starting index of the reserved space.
+   */
+  inline bool handle_consumer_overlap(const int dest, const std::byte* msg, size_t& cur_index, size_t& cur_msgsize, size_t& written_bytes, const size_t reserve_start) {
+    // Check if the consumer's read position falls between the current write index and index of the pending next write.
+    // If it does, we need to wait for the consumer to make progress before writing to the buffer.
+    // This is done to prevent the writer from overwriting data that the consumer has not yet read.
+    // In the mean time, we can copy data from our current read buffer into the panic buffer to not only
+    // prevent deadlock, but make some progress while waiting for other processes.
+    size_t read_bytes = m_read_bytes[dest].get_value();
+    size_t read_index = read_bytes % m_page_aligned_buffer_size;
+    // There are two checks that are needed to determine if the consumer's read position falls between the current write
+    // operation. The first check is to ensure the the consumer counter's value is less than the reserved location plus
+    // the number of bytes currently written (i.e. the current write operation index). This check ensures the case that
+    // there are bytes pending to be read by the remote process (the read value could be equal to the write index if there
+    // are no pending writes to be read). The second check looks at if the start of the current write will overlap with
+    // the reader's location. This will only occur if the buffer is full and remote process have written around the ring
+    // buffer.
+    bool overlap = false;
+    while (read_bytes < reserve_start && (cur_index <= read_index && (cur_index + cur_msgsize) > read_index)) {
+      overlap = true;
+      // Calculate the available bytes between the writer and the reader
+      size_t cur_avail = read_index - cur_index;
+      if (cur_avail > 0) {
+        // Copy data in the buffer up to the remote reader's location
+        fenced_memcpy(m_data[dest] + cur_index, msg + written_bytes, sizeof(std::byte) * cur_avail);
+        // Update to reflect the partial write
+        written_bytes += cur_avail;
+        cur_msgsize -= cur_avail;
+        cur_index = (reserve_start + written_bytes) % m_page_aligned_buffer_size;
+        YGM_ASSERT_RELEASE(cur_msgsize >= 0);
+      } else {
+        // Consume to alleviate deadlock if the buffer is more than 50% full
+        // TODO: Make a deadlock prone test case to see if this value should be tuneable, an idea for this 
+        // could be that each round of iteration we increase the % threshold to do a panic read.
+        if (this->shm_utilized() >= 0.5) {
+          shm_receive(m_panic_read_size);
+          m_stats.shm_panic();
+        }
+      }
+      m_bh.backoff();
+      // get the current read position (updated by another process)
+      read_bytes = m_read_bytes[dest].get_value();
+      read_index = read_bytes % m_page_aligned_buffer_size;
+    }
+    m_bh.reset();
+    return overlap;
+  }
+
+  /**
+   * @brief Waits for remote messages to make progress.
+   * 
+   * @param dest The destination index in the shared memory region.
+   * @param reserve_start The starting index of the reserved space.
+   */
+  inline void wait_for_remote_progress(const int dest, const size_t reserve_start) {
+    while (m_written_bytes[dest].load() != reserve_start) {
       // Consume to alleviate deadlock if the buffer is more than 50% full
-      // TODO: Make a deadlock prone test case to see if this value should be tuneable, an idea for this 
-      // could be that each round of iteration we increase the % threshold to do a panic read.
-      if (this->shm_utilized() >= 0.4) {
+      if (this->shm_utilized() >= 0.5) {
         shm_receive(m_panic_read_size);
         m_stats.shm_panic();
+      } else {
+        m_bh.backoff();
       }
     }
-    m_bh.backoff();
-    // get the current read position (updated by another process)
-    read_bytes = m_read_bytes[dest].get_value();
-    read_index = read_bytes % m_page_aligned_buffer_size;
+    m_bh.reset();
   }
-  m_bh.reset();
-  return overlap;
-}
 
-/**
- * @brief Waits for remote messages to make progress.
- * 
- * @param dest The destination index in the shared memory region.
- * @param reserve_start The starting index of the reserved space.
- */
-inline void wait_for_remote_progress(const int dest, const size_t reserve_start) {
-  while (m_written_bytes[dest].load() != reserve_start) {
-    // Consume to alleviate deadlock if the buffer is more than 50% full
-    if (this->shm_utilized() >= 0.4) {
-      shm_receive(m_panic_read_size);
-      m_stats.shm_panic();
-    } else {
-      m_bh.backoff();
-    }
+  /*void fenced_memcpy(void* dest, const std::byte* msg, const size_t msgsize) {
+    std::atomic_thread_fence(std::memory_order_acquire);
+    std::memcpy(dest, msg, sizeof(std::byte) * msgsize);
+    std::atomic_thread_fence(std::memory_order_release);
+  }*/
+
+  void fenced_memcpy(void* dest, const std::byte* msg, const size_t msgsize) {
+    std::memcpy(dest, msg, sizeof(std::byte) * msgsize);
+    std::atomic_thread_fence(std::memory_order_seq_cst);
   }
-  m_bh.reset();
-}
-
-/*void fenced_memcpy(void* dest, const std::byte* msg, const size_t msgsize) {
-  std::atomic_thread_fence(std::memory_order_acquire);
-  std::memcpy(dest, msg, sizeof(std::byte) * msgsize);
-  std::atomic_thread_fence(std::memory_order_release);
-}*/
-
-void fenced_memcpy(void* dest, const std::byte* msg, const size_t msgsize) {
-  std::memcpy(dest, msg, sizeof(std::byte) * msgsize);
-  std::atomic_thread_fence(std::memory_order_seq_cst);
-}
 
 /**
  * @brief Reads from the shared memory (shm) region. This function is responsible for reading data
