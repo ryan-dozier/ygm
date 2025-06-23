@@ -574,18 +574,18 @@ private:
         throw std::runtime_error(std::string("fstat failed: ") + strerror(errno));
       }
       m_bh.backoff();
-    } while (stat_buf.st_size != size);
+    } while (stat_buf.st_size != page_aligned_size);
     m_bh.reset();
 
     // now that the shm_file is the correct size we can memory map to it.
-    shm_type* shm_ptr = (shm_type*) mmap(NULL, size, PROT_READ | PROT_WRITE, MAP_SHARED, file, 0);
+    shm_type* shm_ptr = (shm_type*) mmap(NULL, page_aligned_size, PROT_READ | PROT_WRITE, MAP_SHARED, file, 0);
     if (shm_ptr == MAP_FAILED) {
       close(file);
       throw std::runtime_error(std::string("mmap failed ") + strerror(errno));
     }
 
-    if (msync(shm_ptr, size, MS_SYNC) == -1) {
-      munmap(shm_ptr, size);
+    if (msync(shm_ptr, page_aligned_size, MS_SYNC) == -1) {
+      munmap(shm_ptr, page_aligned_size);
       close(file);
       throw std::runtime_error(std::string("msync failed: ") + strerror(errno));
     }
