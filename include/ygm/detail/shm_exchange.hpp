@@ -5,7 +5,6 @@
 #include <array>
 #include <atomic>
 #include <cstring>
-#include <deque>
 #include <fcntl.h>
 #include <iostream>
 #include <memory>
@@ -38,7 +37,7 @@ static size_t max_msg_size = -1; // Set to unlimited by default
 
 /** 
  *  @brief 
- *  Atomic Counter Struct I need to do some playing with if we can just use alignas during the 
+ *  Atomic Counter Struct I need to do some playing with. if we can just use alignas during the 
  *  mmap portion of the code as that would remove the need for this. We need each counter to be on
  *  its own cacheline so that processes don't thrash against eachother trying to update counters next
  *  to eachother in the array. The helper functions here are from the underying atomic, just here
@@ -73,7 +72,7 @@ private:
  * @todo: Run some tests with and without, the backoff helper might be outdated with our new model.
  * in the past we ran into more areas of contention and expensive operations when calling to the 
  * filestystem to check if the new shm region was ready
- */ 
+ */
 struct backoff_helper {
   backoff_helper() : MAX_DELAY(64) { m_delay = 1; }
 
@@ -303,7 +302,8 @@ public:
       throw std::runtime_error("SHM Buffer: Invalid msgsize detected. Size: " + std::to_string(msgsize));
     if (dest < 0 || dest >= m_local_size)
       throw std::runtime_error("SHM Buffer: Invalid destination detected. Dest: " + std::to_string(dest));
-    if (msgsize == 0) return;
+    if (msgsize == 0) 
+      return;
     shm_send(dest, (const std::byte*) msg, msgsize);
     m_stats.shm_send(dest, msgsize);
   }
@@ -320,12 +320,11 @@ public:
    * @param buffer_size size of the contiguous storage
    * @return size_t bytes actually read into the buffer
    */
-  bool has_printed = false;
   inline size_t receive(std::shared_ptr<ygm::detail::byte_vector>& buffer) {
     if(m_in_use) { return 0; }
     size_t receive_amount = this->size();
     if (receive_amount > 0) {
-      shm_receive(receive_amount - m_panic.size());
+      size_t amount_read = shm_receive(receive_amount - m_panic.size());
       buffer->swap(m_panic);
       m_panic.clear();
       YGM_ASSERT_RELEASE(m_panic.size() == 0);
@@ -531,9 +530,9 @@ private:
         // into the region this is currently consuming from.
         m_read_bytes[m_local_rank].add_and_synchronize(cur_read);
       }
-      YGM_ASSERT_RELEASE(remaining_bytes == 0);
+      YGM_ASSERT_DEBUG(remaining_bytes == 0);
     }
-    YGM_ASSERT_RELEASE(read_bytes == available_to_read);
+    YGM_ASSERT_DEBUG(read_bytes == available_to_read);
     return available_to_read;
   }
 
@@ -543,17 +542,17 @@ private:
    * 
    * @tparam shm_type 
    * @param filename C-string representing the name of the shared memory region.
-   * @param size in bytes of the shared memory region.
+   * @param page_aligned_size in bytes of the shared memory region.
    * @return shm_type* 
    */
-  template <typename shm_type> shm_type* open_new_shm_region(const char* filename, size_t size) {
+  template <typename shm_type> shm_type* open_new_shm_region(const char* filename, size_t page_aligned_size) {
     int file = shm_open(filename, O_CREAT | O_RDWR | O_EXCL, 0600);
     if (file == -1 && errno != EEXIST) {
       throw std::runtime_error(std::string("shm_open failed: ") + strerror(errno));
     }
     // if we created the file, set the correct file size
     if (file != -1) {
-      if (fallocate(file, 0, 0, size) == -1) {
+      if (fallocate(file, 0, 0, page_aligned_size) == -1) {
         close(file);
         throw std::runtime_error(std::string("fallocate failed: ") + strerror(errno));
       }
